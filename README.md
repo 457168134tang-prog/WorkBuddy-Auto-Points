@@ -1,4 +1,4 @@
-# WorkBuddy自动签到— Chrome / Edge 浏览器插件
+# WorkBuddy自动签到领取积分— Chrome / Edge 浏览器插件
 
 在浏览器工具栏显示 WorkBuddy 积分余量，自动领取每日积分。
 
