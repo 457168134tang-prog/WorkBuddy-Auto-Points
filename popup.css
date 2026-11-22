@@ -1,146 +1,90 @@
 :root {
   color-scheme: light dark;
-  --bg: #ffffff;
-  --fg: #1f2328;
-  --muted: #656d76;
-  --border: #d0d7de;
-  --accent: #1e415e;
-  --accent-fg: #ffffff;
-  --danger: #cf222e;
-  --row: #f6f8fa;
+  --paper: #ffffff;
+  --ink: #1f2328;
+  --soft: #656d76;
+  --line: #d0d7de;
+  --brand: #1e415e;
+  --onbrand: #ffffff;
+  --alert: #cf222e;
+  --tint: #f6f8fa;
 }
-
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1e1e1e;
-    --fg: #e6e6e6;
-    --muted: #9d9d9d;
-    --border: #3c3c3c;
-    --accent: #2d6ca8;
-    --accent-fg: #ffffff;
-    --danger: #f14c4c;
-    --row: #252526;
+    --paper: #1e1e1e;
+    --ink: #e6e6e6;
+    --soft: #9d9d9d;
+    --line: #3c3c3c;
+    --brand: #2d6ca8;
+    --alert: #f14c4c;
+    --tint: #252526;
   }
 }
-
 * { box-sizing: border-box; }
-
 body {
   margin: 0;
   width: 380px;
   max-width: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 13px;
+  padding: 12px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
-
-.app { padding: 12px; }
-
-.header { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
-.logo { width: 26px; height: 26px; border-radius: 6px; }
-.title-block { flex: 1; min-width: 0; }
-.title { font-weight: 600; font-size: 14px; }
-.subtitle { color: var(--muted); font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.icon-btn {
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--fg);
+.shell { display: flex; flex-direction: column; gap: 9px; }
+.top { display: flex; align-items: center; gap: 9px; }
+.mark { width: 26px; height: 26px; border-radius: 6px; }
+.names { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.names strong { font-size: 14px; }
+.names span { color: var(--soft); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.round, .chip {
+  border: 1px solid var(--line);
   border-radius: 6px;
-  width: 28px; height: 28px;
+  background: var(--paper);
+  color: var(--ink);
   cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
+  font-size: 12px;
+  padding: 5px 9px;
+  white-space: nowrap;
 }
-.icon-btn:hover { background: var(--row); }
-
-.account-bar { display: flex; gap: 6px; margin-bottom: 10px; }
-select, input[type="text"], input[type="number"], input[type="password"] {
+.round { width: 28px; height: 28px; font-size: 16px; line-height: 1; padding: 0; }
+.round:hover, .chip:hover { background: var(--tint); }
+.chip.solid { background: var(--brand); border-color: var(--brand); color: var(--onbrand); }
+.chip.danger { color: var(--alert); }
+.chip.wide { width: 100%; margin-top: 8px; }
+.picker { display: flex; gap: 6px; }
+select, input[type="text"], input[type="number"] {
   width: 100%;
   padding: 5px 7px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
+  background: var(--paper);
+  color: var(--ink);
   font-size: 12px;
   outline: none;
 }
 select { flex: 1; min-width: 0; }
-
-.small-btn {
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg);
-  border-radius: 6px;
-  padding: 5px 9px;
-  cursor: pointer;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.small-btn:hover { background: var(--row); }
-.small-btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
-.small-btn.danger { color: var(--danger); }
-
-.summary {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 9px 10px;
-  background: var(--row);
-  margin-bottom: 10px;
-}
-.summary-line { display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap; }
-.summary-line .label { color: var(--muted); }
-.summary-line .value { font-size: 20px; font-weight: 700; color: var(--accent); }
-.summary-line .value-dim { font-weight: 600; }
-.summary-line .sep { color: var(--muted); }
-.summary-line .pct { margin-left: auto; color: var(--muted); font-size: 12px; }
-.bar { height: 4px; background: var(--border); border-radius: 4px; margin-top: 7px; overflow: hidden; }
-.bar-fill { height: 100%; width: 0; background: var(--accent); border-radius: 4px; transition: width .25s; }
-
-.packages { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
-.packages th, .packages td {
-  text-align: left;
-  padding: 5px 6px;
-  border-bottom: 1px solid var(--border);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.packages th { color: var(--muted); font-weight: 500; }
-.packages th:nth-child(n+2), .packages td:nth-child(n+2) { text-align: right; }
-.packages tr:last-child td { border-bottom: none; }
-
-.status { font-size: 12px; color: var(--muted); min-height: 18px; }
-.status .tag { display: inline-block; padding: 1px 6px; border: 1px solid var(--border); border-radius: 10px; margin-right: 5px; }
-.buddy-actions { display: flex; gap: 6px; margin-top: 7px; }
-.buddy-actions .small-btn { flex: 1; }
-.updated { font-size: 11px; color: var(--muted); text-align: right; margin-top: 4px; }
-
-.empty { text-align: center; padding: 18px 6px; }
-.empty p { margin: 4px 0; }
-.muted { color: var(--muted); font-size: 11px; }
-
-.actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.actions .small-btn { flex: 1; }
-
-.token-box { display: flex; gap: 5px; margin-top: 8px; }
-.token-box input { flex: 1; min-width: 0; }
-
-.settings { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; font-size: 12px; }
-.settings summary { cursor: pointer; color: var(--muted); }
-.settings label { display: block; margin-top: 7px; color: var(--muted); }
-.settings label.check { display: flex; align-items: center; gap: 6px; }
-.settings input[type="checkbox"] { width: auto; }
-.settings .small-btn { margin-top: 8px; width: 100%; }
-
-.toast {
-  position: fixed;
-  left: 12px; right: 12px; bottom: 10px;
-  background: var(--accent);
-  color: var(--accent-fg);
-  padding: 8px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  text-align: center;
-}
+.overview { border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; background: var(--tint); }
+.figures { display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap; }
+.caption, .slash { color: var(--soft); }
+.figures b { font-size: 20px; color: var(--brand); }
+.figures em { margin-left: auto; color: var(--soft); font-size: 12px; font-style: normal; }
+.meter { height: 4px; margin-top: 7px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.meter i { display: block; height: 100%; width: 0; background: var(--brand); transition: width .25s; }
+.blank { text-align: center; padding: 18px 6px; }
+.blank p { margin: 4px 0; }
+.dim { color: var(--soft); font-size: 11px; }
+.plans { width: 100%; border-collapse: collapse; font-size: 12px; }
+.plans th, .plans td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plans th { color: var(--soft); font-weight: 500; }
+.plans th + th, .plans td + td { text-align: right; }
+.flags { display: flex; flex-wrap: wrap; gap: 5px; min-height: 18px; }
+.flags span { border: 1px solid var(--line); border-radius: 10px; padding: 1px 6px; color: var(--soft); }
+.trip, .pair { display: flex; gap: 6px; }
+.trip .chip, .pair .chip { flex: 1; }
+.stamp { margin: 0; text-align: right; color: var(--soft); font-size: 11px; }
+.config { border-top: 1px solid var(--line); padding-top: 8px; font-size: 12px; }
+.config summary { cursor: pointer; color: var(--soft); }
+.config label { display: block; margin-top: 7px; color: var(--soft); }
+.config label.toggle { display: flex; align-items: center; gap: 6px; }
+.config input[type="checkbox"] { width: auto; }
+.flash { position: fixed; left: 12px; right: 12px; bottom: 10px; background: var(--brand); color: var(--onbrand); border-radius: 6px; padding: 8px 10px; text-align: center; }

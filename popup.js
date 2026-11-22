@@ -1,211 +1,241 @@
-const $ = (id) => document.getElementById(id);
-let currentState = null;
+const el = (id) => document.getElementById(id);
+let view = null;
+let timer = null;
 
-function send(msg) {
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage(msg, (res) => resolve(res || { ok: false }));
+function ask(kind, extra = {}) {
+  return new Promise((done) => {
+    chrome.runtime.sendMessage({ kind, ...extra }, (reply) => done(reply || { ok: false }));
   });
 }
-function fmt(n) { return parseFloat((n || 0).toFixed(2)).toString(); }
-function fmtTime(ts) {
-  if (!ts) return "—";
-  const d = new Date(ts);
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+function numeric(value) {
+  return parseFloat(((Number(value) || 0).toFixed(2))).toString();
 }
-function toast(text) {
-  const el = $("toast");
-  el.textContent = text;
-  el.hidden = false;
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => { el.hidden = true; }, 3200);
+function stamp(ms) {
+  if (!ms) return "—";
+  const date = new Date(ms);
+  const two = (value) => `${value}`.padStart(2, "0");
+  return `${date.getFullYear()}/${two(date.getMonth() + 1)}/${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`;
 }
-function parseExpiry(s) {
-  if (!s) return Number.POSITIVE_INFINITY;
-  const t = Date.parse(s.includes("T") ? s : s.replace(" ", "T"));
-  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+function safe(value) {
+  return `${value ?? ""}`.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 }
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function endOf(value) {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const parsed = Date.parse(`${value}`.includes("T") ? value : `${value}`.replace(" ", "T"));
+  return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
+}
+function notice(text) {
+  const box = el("flash");
+  box.textContent = text;
+  box.hidden = false;
+  clearTimeout(timer);
+  timer = setTimeout(() => { box.hidden = true; }, 3200);
 }
 
 async function load() {
-  const res = await send({ type: "GET_STATE" });
-  if (res.ok) { currentState = res.state; render(); }
+  const reply = await ask("FETCH_STATE");
+  if (reply.ok) {
+    view = reply.state;
+    paint();
+  }
 }
 
-function render() {
-  const s = currentState;
-  if (!s) return;
-  const accounts = s.accounts || [];
-  const select = $("accountSelect");
-  select.innerHTML = "";
-  if (!accounts.length) {
-    const o = document.createElement("option");
-    o.value = ""; o.textContent = "没有账号";
-    select.appendChild(o);
+function paint() {
+  const state = view;
+  if (!state) return;
+  const list = state.accounts || [];
+  const picker = el("whoPick");
+  picker.innerHTML = "";
+  if (!list.length) {
+    picker.innerHTML = '<option value="">暂无账号</option>';
   } else {
-    for (const acc of accounts) {
-      const o = document.createElement("option");
-      o.value = acc.id; o.textContent = acc.label || "账号";
-      if (acc.id === s.activeId) o.selected = true;
-      select.appendChild(o);
+    for (const item of list) {
+      const option = document.createElement("option");
+      option.value = item.id;
+      option.textContent = item.label || "账号";
+      option.selected = item.id === state.activeId;
+      picker.appendChild(option);
     }
   }
-  const acc = accounts.find((a) => a.id === s.activeId) || accounts[0];
-  const snap = acc ? s.snapshots[acc.id] : null;
+  const active = list.find((item) => item.id === state.activeId) || list[0];
+  const shot = active ? state.snapshots[active.id] : null;
+  el("who").textContent = active ? `当前：${active.label || "账号"}` : "尚未保存账号";
+  el("blank").hidden = !!active;
+  el("overview").hidden = !active || !shot?.result;
+  el("planTable").hidden = !active || !shot?.result;
+  el("flags").innerHTML = "";
+  el("tripBtns").hidden = true;
+  el("lastTime").textContent = "";
 
-  $("activeHint").textContent = acc ? `当前账号：${acc.label || "账号"}` : "尚未添加账号";
-  $("empty").hidden = !!acc;
-  $("summary").hidden = !acc || !snap?.result;
-  $("packages").hidden = !acc || !snap?.result;
-  $("status").textContent = "";
-  $("buddyActions").hidden = true;
-  $("updated").textContent = "";
-
-  if (!acc) {
-    $("remain").textContent = "—";
-    $("total").textContent = "—";
-    $("pct").textContent = "";
-    $("barFill").style.width = "0";
+  if (!active) {
+    el("leftNum").textContent = "—";
+    el("allNum").textContent = "—";
+    el("ratio").textContent = "";
+    el("meterFill").style.width = "0";
     return;
   }
-
-  if (snap?.authProblem) {
-    $("status").innerHTML = '<span class="tag">⚠ 登录已过期，请在官网重新登录后「添加当前账号」</span>';
-  } else if (snap?.error) {
-    $("status").innerHTML = `<span class="tag">⚠ 拉取失败：${escapeHtml(snap.error)}</span>`;
+  if (shot?.authProblem) {
+    el("flags").innerHTML = '<span>⚠ 登录已失效，请重新保存账号</span>';
+  } else if (shot?.error) {
+    el("flags").innerHTML = `<span>⚠ 读取失败：${safe(shot.error)}</span>`;
   }
 
-  const result = snap?.result;
+  const result = shot?.result;
   if (result) {
-    $("remain").textContent = fmt(result.remain);
-    $("total").textContent = fmt(result.total);
-    const pct = result.total > 0 ? (result.remain / result.total) * 100 : 0;
-    $("pct").textContent = `${pct.toFixed(1)}%`;
-    $("barFill").style.width = `${Math.max(0, Math.min(100, pct))}%`;
-    const visible = (result.accounts || [])
-      .filter((a) => (parseFloat(a.CycleCapacityRemainPrecise ?? a.CapacityRemainPrecise ?? "0") || 0) > 0)
-      .sort((a, b) => parseExpiry(a.CycleEndTime) - parseExpiry(b.CycleEndTime));
-    const body = $("packageBody");
+    el("leftNum").textContent = numeric(result.remain);
+    el("allNum").textContent = numeric(result.amount);
+    const percent = result.amount > 0 ? (result.remain / result.amount) * 100 : 0;
+    el("ratio").textContent = `${percent.toFixed(1)}%`;
+    el("meterFill").style.width = `${Math.max(0, Math.min(100, percent))}%`;
+
+    const usable = (result.rows || [])
+      .filter((row) => (parseFloat(row.CycleCapacityRemainPrecise ?? row.CapacityRemainPrecise ?? "0") || 0) > 0)
+      .sort((first, second) => endOf(first.CycleEndTime) - endOf(second.CycleEndTime));
+    const body = el("planBody");
     body.innerHTML = "";
-    if (!visible.length) {
-      body.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--muted)">暂无有余量的套餐</td></tr>';
+    if (!usable.length) {
+      body.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--soft)">暂无可用套餐</td></tr>';
     } else {
-      for (const a of visible.slice(0, 5)) {
-        const tr = document.createElement("tr");
-        const remain = fmt(parseFloat(a.CycleCapacityRemainPrecise ?? a.CapacityRemainPrecise ?? "0"));
-        const size = fmt(parseFloat(a.CycleCapacitySizePrecise ?? a.CapacitySizePrecise ?? "0"));
-        tr.innerHTML = `<td title="${escapeHtml(a.PackageName || '')}">${escapeHtml((a.PackageName || "-").slice(0, 18))}</td><td>${remain}</td><td>${size}</td><td>${escapeHtml((a.CycleEndTime || "-").slice(0, 16))}</td>`;
-        body.appendChild(tr);
+      for (const row of usable.slice(0, 5)) {
+        const line = document.createElement("tr");
+        const left = numeric(parseFloat(row.CycleCapacityRemainPrecise ?? row.CapacityRemainPrecise ?? "0"));
+        const size = numeric(parseFloat(row.CycleCapacitySizePrecise ?? row.CapacitySizePrecise ?? "0"));
+        line.innerHTML = `<td title="${safe(row.PackageName || "")}">${safe((row.PackageName || "-").slice(0, 18))}</td><td>${left}</td><td>${size}</td><td>${safe((row.CycleEndTime || "-").slice(0, 16))}</td>`;
+        body.appendChild(line);
       }
-      if (visible.length > 5) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="4" style="text-align:center;color:var(--muted)">共 ${visible.length} 个，仅显示前 5 条</td>`;
-        body.appendChild(tr);
+      if (usable.length > 5) {
+        const line = document.createElement("tr");
+        line.innerHTML = `<td colspan="4" style="text-align:center;color:var(--soft)">共 ${usable.length} 项，仅显示前 5 项</td>`;
+        body.appendChild(line);
       }
     }
   }
 
-  const tags = [];
-  if (s.settings.autoCheckin && snap?.checkin) {
-    const c = snap.checkin;
-    tags.push(c.state === "claimed" ? "✓ 已签到" : c.state === "unclaimed" ? "○ 未签到" : "⚠ 签到异常");
+  const flags = [];
+  if (state.settings.dailyEnabled && shot?.daily) {
+    const phase = typeof shot.daily === "string" ? shot.daily : shot.daily.state;
+    flags.push(phase === "done" ? "✓ 今日已领" : phase === "pending" ? "○ 今日待领" : "⚠ 领取异常");
   }
-  if (s.settings.buddyTravel && snap?.buddy?.status) {
-    const st = snap.buddy.status;
-    if (st.state === "traveling") {
-      const remain = Math.max(0, (st.arriveAt || 0) - (st.serverNow || Math.floor(Date.now() / 1000)));
-      const hh = String(Math.floor(remain / 3600)).padStart(2, "0");
-      const mm = String(Math.floor((remain % 3600) / 60)).padStart(2, "0");
-      const ss = String(remain % 60).padStart(2, "0");
-      tags.push(`✿ 旅行倒计时 ${hh}:${mm}:${ss}`);
-    } else if (st.dailyLimitReached) {
-      tags.push("✿ 今日已完成");
+  if (state.settings.tripEnabled && shot?.trip?.status) {
+    const status = shot.trip.status;
+    if (status.state === "traveling") {
+      const left = Math.max(0, (status.backAt || 0) - (status.now || Math.floor(Date.now() / 1000)));
+      const hh = `${Math.floor(left / 3600)}`.padStart(2, "0");
+      const mm = `${Math.floor((left % 3600) / 60)}`.padStart(2, "0");
+      const ss = `${left % 60}`.padStart(2, "0");
+      flags.push(`✿ 行程倒计时 ${hh}:${mm}:${ss}`);
+    } else if (status.capped) {
+      flags.push("✿ 今日已满");
     } else {
-      tags.push("✿ 可领积分 / 去旅行");
-      $("buddyActions").hidden = false;
+      flags.push("✿ 奖励可领 / 可出发");
+      el("tripBtns").hidden = false;
     }
   }
-  if (tags.length) $("status").innerHTML += tags.map((t) => `<span class="tag">${t}</span>`).join("");
-  if (snap?.updatedAt) $("updated").textContent = `最近更新 ${fmtTime(snap.updatedAt)}`;
+  el("flags").innerHTML += flags.map((text) => `<span>${text}</span>`).join("");
+  if (shot?.updatedAt) el("lastTime").textContent = `最近同步 ${stamp(shot.updatedAt)}`;
 
-  $("apiBase").value = s.settings.apiBase || "";
-  $("refreshInterval").value = s.settings.refreshIntervalMinutes ?? 30;
-  $("autoCheckin").checked = !!s.settings.autoCheckin;
-  $("buddyTravel").checked = !!s.settings.buddyTravel;
+  el("apiHost").value = state.settings.apiBase || "";
+  el("minutes").value = state.settings.refreshIntervalMinutes ?? 30;
+  el("autoDaily").checked = !!state.settings.dailyEnabled;
+  el("autoTrip").checked = !!state.settings.tripEnabled;
 }
 
-$("refreshBtn").addEventListener("click", async () => {
-  toast("正在刷新全部账号…");
-  const res = await send({ type: "REFRESH" });
-  if (res.ok) { currentState = res.state; render(); toast("刷新完成"); }
-  else toast(`刷新失败：${res.error || ""}`);
-});
-
-$("accountSelect").addEventListener("change", async (e) => {
-  const res = await send({ type: "SWITCH", id: e.target.value });
-  if (res.ok) { currentState = res.state; render(); toast("已切换账号"); }
-  else toast(`切换失败：${res.error || ""}`);
-});
-
-$("addBtn").addEventListener("click", async () => {
-  toast("正在读取浏览器登录态并验证…");
-  const res = await send({ type: "ADD_ACCOUNT" });
-  if (res.ok) {
-    currentState = res.state; render();
-    toast(res.duplicate ? `账号 ${res.label} 已存在，已切换到它（剩余 ${fmt(res.remain)}）` : `账号已添加（剩余 ${fmt(res.remain)}）`);
+async function refresh() {
+  notice("正在同步全部账号…");
+  const reply = await ask("SYNC_ALL");
+  if (reply.ok) {
+    view = reply.state;
+    paint();
+    notice("同步完成");
   } else {
-    toast(`添加失败：${res.error || ""}`);
+    notice(`同步失败：${reply.error || ""}`);
+  }
+}
+
+async function adopt() {
+  notice("正在读取登录信息…");
+  const reply = await ask("ADOPT");
+  if (!reply.ok) {
+    notice(`保存失败：${reply.error || ""}`);
+    return;
+  }
+  view = reply.state;
+  paint();
+  notice(reply.repeated ? `${reply.label} 已存在，已切换到它` : `已保存 ${reply.label}`);
+}
+
+async function rename() {
+  const state = view;
+  const active = state?.accounts.find((item) => item.id === state.activeId);
+  if (!active) return;
+  const name = prompt("为这个账号设置名称：", active.label || "");
+  if (!name || !name.trim()) return;
+  const reply = await ask("RENAME", { id: active.id, name: name.trim() });
+  if (reply.ok) {
+    view = reply.state;
+    paint();
+  }
+}
+
+async function forget() {
+  const state = view;
+  if (!state?.activeId) return;
+  if (!confirm("确定移除这个账号？仅清除本插件保存的登录信息，不影响网站登录。")) return;
+  const reply = await ask("FORGET", { id: state.activeId });
+  if (reply.ok) {
+    view = reply.state;
+    paint();
+    notice("账号已移除");
+  }
+}
+
+async function act(kind) {
+  if (kind === "SYNC_ALL") return refresh();
+  if (kind === "ADOPT") return adopt();
+  if (kind === "RENAME") return rename();
+  if (kind === "FORGET") return forget();
+  if (kind === "WRITE_CONFIG") {
+    const reply = await ask("WRITE_CONFIG", {
+      config: {
+        apiBase: el("apiHost").value.trim() || "https://www.codetrip.cn",
+        refreshIntervalMinutes: Number(el("minutes").value) || 0,
+        dailyEnabled: el("autoDaily").checked,
+        tripEnabled: el("autoTrip").checked
+      }
+    });
+    if (reply.ok) view = reply.state;
+    notice(reply.ok ? "选项已保存" : `保存失败：${reply.error || ""}`);
+    return;
+  }
+  const reply = await ask(kind);
+  if (reply.ok) {
+    if (reply.state) view = reply.state;
+    paint();
+    notice(reply.message || "处理完成");
+  } else {
+    notice(`处理失败：${reply.error || ""}`);
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-act]");
+  if (button) act(button.dataset.act);
+});
+
+el("whoPick").addEventListener("change", async (event) => {
+  const reply = await ask("PICK", { id: event.target.value });
+  if (reply.ok) {
+    view = reply.state;
+    paint();
+    notice("已切换账号");
   }
 });
 
-$("openSiteBtn").addEventListener("click", async () => {
-  await send({ type: "OPEN_USAGE" });
-});
-
-$("renameBtn").addEventListener("click", async () => {
-  const s = currentState;
-  const acc = s?.accounts.find((a) => a.id === s.activeId);
-  if (!acc) return;
-  const name = prompt("给这个账号起个名字：", acc.label || "");
-  if (!name || !name.trim()) return;
-  const res = await send({ type: "RENAME_ACCOUNT", id: acc.id, label: name.trim() });
-  if (res.ok) { currentState = res.state; render(); }
-});
-
-async function buddyAction(type) {
-  const res = await send({ type });
-  if (res.ok) { if (res.state) currentState = res.state; render(); toast(res.message || "操作完成"); }
-  else toast(`操作失败：${res.error || ""}`);
-}
-$("buddyClaimBtn").addEventListener("click", () => buddyAction("BUDDY_CLAIM"));
-$("buddyDepartBtn").addEventListener("click", () => buddyAction("BUDDY_DEPART"));
-
-$("usageBtn").addEventListener("click", () => send({ type: "OPEN_USAGE" }));
-
-$("removeBtn").addEventListener("click", async () => {
-  const s = currentState;
-  if (!s?.activeId) return;
-  if (!confirm("确定从插件里删除这个账号？（只删除插件保存的 Cookie，不影响网站登录）")) return;
-  const res = await send({ type: "REMOVE_ACCOUNT", id: s.activeId });
-  if (res.ok) { currentState = res.state; render(); toast("账号已删除"); }
-});
-
-$("saveSettings").addEventListener("click", async () => {
-  const settings = {
-    apiBase: $("apiBase").value.trim() || "https://www.codebuddy.cn",
-    refreshIntervalMinutes: Number($("refreshInterval").value) || 0,
-    autoCheckin: $("autoCheckin").checked,
-    buddyTravel: $("buddyTravel").checked,
-  };
-  const res = await send({ type: "UPDATE_SETTINGS", settings });
-  toast(res.ok ? "设置已保存" : `保存失败：${res.error || ""}`);
-  if (res.ok) currentState = res.state;
-});
-
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "STATE_UPDATED") { currentState = msg.state; render(); }
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.kind === "REFRESHED") {
+    view = message.state;
+    paint();
+  }
 });
 
 load();

@@ -1,659 +1,602 @@
-
-
-const SITE_DOMAINS = [
-  "www.codebuddy.cn", "codebuddy.cn",
-  "www.workbuddy.cn", "workbuddy.cn",
+const HOSTS = [
+  "www.codetrip.cn", "codetrip.cn",
+  "www.worktrip.cn", "worktrip.cn"
 ];
 
-const AUTH_COOKIE_NAMES = new Set([
+const SESSION_FIELDS = new Set([
   "session", "session_2", "_pre_auth_session",
-  "cb_login_mode", "cb_login_realm",
+  "cb_login_mode", "cb_login_realm"
 ]);
 
-const DEFAULT_PACKAGE_CODES = [
+const BILLING_PLANS = [
   "TCACA_code_008_cfWoLwvjU4",
   "TCACA_code_009_0XmEQc2xOf",
   "TCACA_code_038_OhvqZtiPKr",
   "TCACA_code_007_nzdH5h4Nl0",
   "TCACA_code_028_NtpWi0jzXs",
   "TCACA_code_029_6wCGEWquYy",
-  "TCACA_code_030_BjSt89qTvr",
+  "TCACA_code_030_BjSt89qTvr"
 ];
 
-const DEFAULT_STATE = {
+const BASE_CONFIG = {
   accounts: [],
   activeId: "",
   snapshots: {},
   lastAutoRefreshDate: "",
   settings: {
-    apiBase: "https://www.codebuddy.cn",
+    apiBase: "https://www.codetrip.cn",
     refreshIntervalMinutes: 30,
-    autoCheckin: true,
-    buddyTravel: true,
-  },
+    dailyEnabled: true,
+    tripEnabled: true
+  }
 };
 
-let state = null;
-let refreshing = false;
-let cookiesBusy = false;
+const EXPIRED = "SESSION_GONE";
+let cached = null;
+let syncing = false;
+let rotating = false;
 
-async function ensureState() {
-  if (state) return state;
-  const keys = Object.keys(DEFAULT_STATE);
-  const stored = await chrome.storage.local.get(keys);
-  state = JSON.parse(JSON.stringify(DEFAULT_STATE));
-  for (const k of keys) if (stored[k] !== undefined) state[k] = stored[k];
-  state.settings = { ...DEFAULT_STATE.settings, ...(stored.settings || {}) };
-  state.snapshots = stored.snapshots || {};
-  state.accounts = stored.accounts || [];
-  return state;
-}
-
-async function saveState() {
-  if (state) await chrome.storage.local.set(state);
-}
-
-function newId() {
-  return `acc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function createSnapshot() {
-  return {
-    result: null, updatedAt: 0, checkin: null, buddy: null,
-    error: "", authProblem: "",
-    buddyAutoDate: "", buddyClaimKey: "", buddyClaimErrorDate: "", buddyWasTraveling: false,
-  };
-}
-
-function todayStr() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
-function fmt(n) { return parseFloat((n || 0).toFixed(2)).toString(); }
-
-function parseExpiry(s) {
-  if (!s) return Number.POSITIVE_INFINITY;
-  const t = Date.parse(s.includes("T") ? s : s.replace(" ", "T"));
-  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
-}
-
-function cookieUrl(domain, path) {
-  return `https://${domain}${path && path.startsWith("/") ? path : "/"}`;
-}
-
-async function readSiteCookies() {
-  const all = await chrome.cookies.getAll({});
-  return all
-    .filter((c) => SITE_DOMAINS.some((d) => c.domain === d || c.domain === `.${d}` || c.domain.endsWith(`.${d.replace(/^www\./, "")}`)))
-    .filter((c) => AUTH_COOKIE_NAMES.has(c.name))
-    .map((c) => ({
-      name: c.name, value: c.value, domain: c.domain, path: c.path,
-      secure: c.secure, httpOnly: c.httpOnly, sameSite: c.sameSite,
-      expirationDate: c.expirationDate,
-    }));
-}
-
-async function clearSiteCookies() {
-  const all = await chrome.cookies.getAll({});
-  for (const c of all) {
-    if (!SITE_DOMAINS.some((d) => c.domain === d || c.domain === `.${d}`)) continue;
-    await chrome.cookies.remove({ url: cookieUrl(c.domain, c.path), name: c.name }).catch(() => {});
+const clock = {
+  day() {
+    const now = new Date();
+    const two = (value) => `${value}`.padStart(2, "0");
+    return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
   }
-}
+};
 
-async function applyCookies(cookies) {
-  for (const c of cookies || []) {
-    const setting = {
-      url: cookieUrl(c.domain, c.path),
-      name: c.name,
-      value: c.value,
-      path: c.path || "/",
-      secure: c.secure !== false,
-      httpOnly: c.httpOnly !== false,
-    };
-    if (c.sameSite && c.sameSite !== "unspecified") setting.sameSite = c.sameSite;
-    if (c.expirationDate && c.expirationDate > Date.now() / 1000) setting.expirationDate = c.expirationDate;
-    await chrome.cookies.set(setting).catch(() => {});
-  }
-}
-
-async function withAccountCookies(account, fn) {
-  while (cookiesBusy) await new Promise((r) => setTimeout(r, 30));
-  cookiesBusy = true;
-  try {
-    await clearSiteCookies();
-    await applyCookies(account.cookies);
-    return await fn();
-  } finally {
-
-    const s = await ensureState();
-    const active = s.accounts.find((a) => a.id === s.activeId);
-    await clearSiteCookies();
-    if (active) await applyCookies(active.cookies);
-    cookiesBusy = false;
-  }
-}
-
-async function detectApiBase() {
-  const cookies = await chrome.cookies.getAll({}).catch(() => []);
-  const has = (host) =>
-    cookies.some((c) =>
-      (c.domain === host || c.domain === `.${host}`) &&
-      (c.name === "session" || c.name === "session_2")
-    );
-  if (has("www.codebuddy.cn")) return "https://www.codebuddy.cn";
-  if (has("www.workbuddy.cn")) return "https://www.workbuddy.cn";
-  return null;
-}
-
-async function apiFetch(path, options = {}) {
-  const s = await ensureState();
-  const detected = await detectApiBase();
-  const base = (detected || s.settings.apiBase || "https://www.codebuddy.cn").replace(/\/$/, "");
-  const resp = await fetch(`${base}${path}`, {
-    method: options.method || "GET",
-    credentials: "include",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json, text/plain, */*",
-      "x-client-platform": "web",
-      ...(options.headers || {}),
-    },
-    body: options.body,
-    cache: "no-store",
-  });
-  let json = null;
-  try { json = await resp.json(); } catch (e) {  }
-  return { resp, json };
-}
-
-async function fetchUsage() {
-  const body = {
-    PageNumber: 1, PageSize: 200, ProductCode: "p_tcaca", Status: [0, 3],
-    OnlyValidPeriod: true, PackageCodes: DEFAULT_PACKAGE_CODES, NeedInUsage: true,
-  };
-  const { resp, json } = await apiFetch("/billing/meter/get-user-resource", {
-    method: "POST", body: JSON.stringify(body),
-  });
-  if (resp.status === 401) throw new Error("AUTH_EXPIRED");
-  if (!resp.ok) throw new Error(friendlyMsg(`HTTP_${resp.status}`));
-  const accounts = json?.data?.Response?.Data?.Accounts || [];
-  let remain = 0, total = 0;
-  for (const a of accounts) {
-    let r, size;
-    if (a.CycleCapacityRemainPrecise != null && a.CycleCapacitySizePrecise != null) {
-      r = parseFloat(a.CycleCapacityRemainPrecise) || 0;
-      size = parseFloat(a.CycleCapacitySizePrecise) || 0;
-    } else {
-      r = parseFloat(a.CapacityRemainPrecise || "0") || 0;
-      size = parseFloat(a.CapacitySizePrecise || "0") || 0;
+const store = {
+  async read() {
+    if (cached) return cached;
+    const saved = await chrome.storage.local.get(Object.keys(BASE_CONFIG));
+    cached = structuredClone(BASE_CONFIG);
+    for (const key of Object.keys(BASE_CONFIG)) {
+      if (saved[key] !== undefined) cached[key] = saved[key];
     }
-    remain += r;
-    if (r > 0) total += size;
+    cached.settings = { ...BASE_CONFIG.settings, ...(saved.settings || {}) };
+    cached.snapshots = saved.snapshots || {};
+    cached.accounts = saved.accounts || [];
+    return cached;
+  },
+  async commit() {
+    if (cached) await chrome.storage.local.set(cached);
   }
-  return { remain, total, accounts };
-}
+};
 
-async function fetchCheckinStatus() {
-  try {
-    const { resp, json } = await apiFetch("/billing/meter/checkin-status", { method: "POST", body: "{}" });
-    if (resp.status === 401) throw new Error("AUTH_EXPIRED");
-    if (json?.code === 10001) return { state: "claimed" };
-    if (!resp.ok) return { state: "unknown", error: friendlyMsg(`HTTP_${resp.status}`) };
-    return { state: json?.data?.today_checked_in === true ? "claimed" : "unclaimed" };
-  } catch (e) {
-    if (e.message === "AUTH_EXPIRED") throw e;
-    return { state: "unknown", error: friendlyMsg(e.message || e) };
+const label = (value) => parseFloat((Number(value) || 0).toFixed(2)).toString();
+const expiryTime = (value) => {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const parsed = Date.parse(`${value}`.includes("T") ? value : `${value}`.replace(" ", "T"));
+  return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
+};
+const newAccountId = () => `acct_${(globalThis.crypto?.randomUUID?.() || `${Date.now()}${Math.random()}`).slice(0, 12)}`;
+
+const ERROR_RULES = [
+  [/not arrived|not yet|still traveling|in progress/i, "行程尚未结束，结束后再领取奖励"],
+  [/no unclaimed|no travel|nothing to claim/i, "当前没有可领取的行程奖励"],
+  [/no active buddy|no buddy/i, "当前没有可出发的行程，可能进行中或今日已满"],
+  [/daily limit|limit reached|reached.*limit/i, "今日已达上限，明天再来"],
+  [/already/i, "已经处理过，无需重复"],
+  [new RegExp(EXPIRED, "i"), "登录已失效，请重新保存账号"],
+  [/^HTTP_/, "网络请求失败，请稍后重试"]
+];
+
+const explain = (reason) => {
+  const text = `${reason || ""}`;
+  for (const [pattern, message] of ERROR_RULES) {
+    if (pattern.test(text)) return message;
   }
-}
-
-async function doCheckin() {
-  try {
-    const { resp, json } = await apiFetch("/billing/meter/daily-checkin", { method: "POST", body: "{}" });
-    if (resp.status === 401) throw new Error("AUTH_EXPIRED");
-    if (json?.code === 10001 || json?.code === 0) {
-      return { state: "claimed", credit: json?.data?.credit, freshlyClaimed: json?.code === 0 };
-    }
-    if (!resp.ok) return { state: "unknown", error: friendlyMsg(`HTTP_${resp.status}`) };
-    return await fetchCheckinStatus();
-  } catch (e) {
-    if (e.message === "AUTH_EXPIRED") throw e;
-    return { state: "unknown", error: friendlyMsg(e.message || e) };
-  }
-}
-
-async function ensureCheckin() {
-  const status = await fetchCheckinStatus();
-  if (status.state === "claimed") return status;
-  if (status.state === "unclaimed") return doCheckin();
-  return status;
-}
-
-async function callBuddyApi(sub, method, body) {
-  const { resp, json } = await apiFetch(`/activity/growth/buddy/travel/${sub}`, { method, body });
-  if (resp.status === 401) throw new Error("AUTH_EXPIRED");
-  if (!json || typeof json !== "object") return { code: resp.status, msg: `HTTP_${resp.status}` };
-  if (json.code == null) json.code = resp.status;
-  return json;
-}
-
-async function fetchBuddyStatus() {
-  try {
-    const json = await callBuddyApi("status", "GET");
-    if (json?.code !== 0) return null;
-    const d = json.data || {};
-    return {
-      state: d.state, departAt: d.depart_at, arriveAt: d.arrive_at,
-      serverNow: d.server_now, durationHours: d.duration_hours ?? d.location?.duration_hours,
-      dailyLimitReached: d.daily_limit_reached, locationName: d.location?.name,
-    };
-  } catch (e) { return null; }
-}
-
-async function fetchTravelRewardCredit(departAt) {
-  try {
-    const json = await callBuddyApi("records?page=1&page_size=20", "GET");
-    if (json?.code !== 0) return undefined;
-    const records = json?.data?.records || [];
-    if (!records.length) return undefined;
-    const hit = departAt != null ? records.find((r) => r.depart_at === departAt) : undefined;
-    const v = (hit || records[0])?.reward_credit;
-    return typeof v === "number" ? v : undefined;
-  } catch (e) { return undefined; }
-}
-
-function friendlyMsg(msg) {
-  const text = String(msg || "");
-  if (/not arrived|not yet|still traveling|in progress/i.test(text)) return "喵喵还在旅行途中，积分到账后再来领取";
-  if (/no unclaimed|no travel|nothing to claim/i.test(text)) return "当前没有可领取的旅行积分";
-  if (/no active buddy|no buddy/i.test(text)) return "当前没有可派出的喵喵（可能正在旅行中或今日已达上限）";
-  if (/daily limit|limit reached|reached.*limit/i.test(text)) return "今日已达到上限，明天再来吧";
-  if (/already/i.test(text)) return "已经操作过了，无需重复";
-  if (/AUTH_EXPIRED|unauthenticated|unauthorized/i.test(text)) return "登录已过期，请重新添加账号";
-  if (/^HTTP_/.test(text)) return "网络请求失败，请稍后重试";
   return text;
-}
+};
 
-async function claimBuddy() {
-  try {
-    const json = await callBuddyApi("claim", "POST", "{}");
-    if (json?.code === 0) return { claimed: true, credit: json?.data?.credit };
-    const msg = json?.msg || `HTTP_${json?.code || ""}`;
-
-    if (/no unclaimed|not arrived|not yet|no travel|nothing to claim/i.test(msg)) {
-      return { credit: 0, reason: /not arrived|not yet/i.test(msg) ? "not-arrived" : "none" };
+const cookies = {
+  async collect() {
+    const items = await chrome.cookies.getAll({});
+    return items
+      .filter((item) => HOSTS.some((host) => item.domain === host || item.domain === `.${host}`))
+      .filter((item) => SESSION_FIELDS.has(item.name))
+      .map((item) => ({
+        name: item.name, value: item.value, domain: item.domain, path: item.path,
+        secure: item.secure, httpOnly: item.httpOnly, sameSite: item.sameSite,
+        expirationDate: item.expirationDate
+      }));
+  },
+  scope(item) {
+    return `https://${item.domain}${item.path && item.path.startsWith("/") ? item.path : "/"}`;
+  },
+  async wipe() {
+    const items = await chrome.cookies.getAll({});
+    for (const item of items) {
+      if (!HOSTS.some((host) => item.domain === host || item.domain === `.${host}`)) continue;
+      await chrome.cookies.remove({ url: cookies.scope(item), name: item.name }).catch(() => {});
     }
-    return { error: friendlyMsg(msg) };
-  } catch (e) {
-    if (e.message === "AUTH_EXPIRED") throw e;
-    return { error: friendlyMsg(e.message || e) };
-  }
-}
-
-function resolveTravelHours(st) {
-  if (!st) return undefined;
-  if (st.durationHours != null && st.durationHours > 0) return st.durationHours;
-  if (st.arriveAt != null && st.departAt != null && st.arriveAt > st.departAt) {
-    const h = (st.arriveAt - st.departAt) / 3600;
-    return h > 0 ? Math.round(h * 10) / 10 : undefined;
-  }
-  return undefined;
-}
-
-async function departBuddy(locationId = 1) {
-  try {
-    const json = await callBuddyApi("depart", "POST", JSON.stringify({ location_id: locationId }));
-    if (json?.code !== 0) {
-      const raw = json?.msg || `HTTP_${json?.code || ""}`;
-
-      if (/no active buddy|no buddy|already|traveling|in progress|daily limit|limit reached/i.test(raw)) {
-        return { reason: /daily limit|limit reached/i.test(raw) ? "limit" : "not-idle", message: friendlyMsg(raw) };
-      }
-      return { error: friendlyMsg(raw) };
+  },
+  async restore(list) {
+    for (const item of list || []) {
+      const spec = {
+        url: cookies.scope(item), name: item.name, value: item.value,
+        path: item.path || "/", secure: item.secure !== false, httpOnly: item.httpOnly !== false
+      };
+      if (item.sameSite && item.sameSite !== "unspecified") spec.sameSite = item.sameSite;
+      if (item.expirationDate && item.expirationDate > Date.now() / 1000) spec.expirationDate = item.expirationDate;
+      await chrome.cookies.set(spec).catch(() => {});
     }
-    const departHours = json?.data?.duration_hours ?? json?.data?.duration;
-    let hours = resolveTravelHours(await fetchBuddyStatus());
-    if (hours == null && typeof departHours === "number" && departHours > 0) hours = departHours;
-    return { hours: hours != null && hours > 0 ? hours : 0 };
-  } catch (e) {
-    if (e.message === "AUTH_EXPIRED") throw e;
-    return { error: friendlyMsg(e.message || e) };
-  }
-}
-
-async function ensureBuddy(snap) {
-  const s = await ensureState();
-  if (!s.settings.buddyTravel) return undefined;
-  const status = await fetchBuddyStatus();
-  if (!status) return undefined;
-  const buddy = { status };
-  const backFromTravel = status.state != null && status.state !== "traveling";
-  const isTraveling = status.state === "traveling";
-  const travelJustEnded = snap.buddyWasTraveling && !isTraveling;
-  const travelKey = String(status.departAt ?? status.arriveAt ?? status.state ?? "");
-
-  if (backFromTravel && (travelJustEnded || travelKey !== snap.buddyClaimKey)) {
-    const c = await claimBuddy().catch((e) => ({ error: e.message || String(e) }));
-    if (c.reason === "not-arrived") {
-
-    } else if (c.error) {
-      buddy.claim = { error: c.error };
-      if (snap.buddyClaimErrorDate !== todayStr()) {
-        buddy.freshlyClaimFailed = true;
-        snap.buddyClaimErrorDate = todayStr();
-      }
-    } else {
-      let credit = c.credit;
-      if (c.claimed && !(credit > 0)) credit = await fetchTravelRewardCredit(status.departAt);
-      buddy.claim = { credit: credit || 0 };
-      if (c.claimed) buddy.freshlyClaimed = true;
-      snap.buddyClaimKey = travelKey;
-    }
-  }
-  const canDepart = backFromTravel && !status.dailyLimitReached;
-  if (canDepart && snap.buddyAutoDate !== todayStr()) {
-    const d = await departBuddy().catch((e) => ({ error: e.message || String(e) }));
-    if (d.hours != null) { buddy.depart = { hours: d.hours }; buddy.freshlyDeparted = true; }
-    else if (d.error) buddy.depart = { error: d.error };
-    const st2 = await fetchBuddyStatus();
-    if (st2) buddy.status = st2;
-    snap.buddyAutoDate = todayStr();
-  }
-  snap.buddyWasTraveling = (buddy.status?.state || status.state) === "traveling";
-  return buddy;
-}
-
-async function refreshAccount(acc) {
-  const s = await ensureState();
-  const snap = s.snapshots[acc.id] || createSnapshot();
-  snap.error = ""; snap.authProblem = "";
-  await withAccountCookies(acc, async () => {
+  },
+  async borrow(account, task) {
+    while (rotating) await new Promise((done) => setTimeout(done, 25));
+    rotating = true;
     try {
-      const autoCheckin = s.settings.autoCheckin;
-      const [checkin, buddy] = await Promise.all([
-        autoCheckin ? ensureCheckin() : Promise.resolve(undefined),
-        ensureBuddy(snap),
-      ]);
-      snap.checkin = checkin;
-      snap.buddy = buddy;
-      snap.result = await fetchUsage();
-      snap.updatedAt = Date.now();
+      await cookies.wipe();
+      await cookies.restore(account.cookies);
+      return await task();
+    } finally {
+      const state = await store.read();
+      const chosen = state.accounts.find((item) => item.id === state.activeId);
+      await cookies.wipe();
+      if (chosen) await cookies.restore(chosen.cookies);
+      rotating = false;
+    }
+  }
+};
 
-      if (/^账号 \d+$/.test(acc.label)) {
-        const identity = await fetchAccountName();
-        if (identity && identity.label) { acc.label = identity.label; acc.detail = identity.detail || ""; }
+const api = {
+  async endpoint() {
+    const items = await chrome.cookies.getAll({}).catch(() => []);
+    const has = (host) => items.some((item) =>
+      (item.domain === host || item.domain === `.${host}`) &&
+      (item.name === "session" || item.name === "session_2")
+    );
+    if (has("www.codetrip.cn")) return "https://www.codetrip.cn";
+    if (has("www.worktrip.cn")) return "https://www.worktrip.cn";
+    return null;
+  },
+  async call(route, options = {}) {
+    const state = await store.read();
+    const base = (await api.endpoint()) || state.settings.apiBase || "https://www.codetrip.cn";
+    const response = await fetch(`${base.replace(/\/$/, "")}${route}`, {
+      method: options.method || "GET",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/plain, */*",
+        "x-client-platform": "web"
+      },
+      body: options.body,
+      cache: "no-store"
+    });
+    let json = null;
+    try { json = await response.json(); } catch (_) { }
+    return { ok: response.ok, status: response.status, json };
+  },
+  trip(route, method = "GET", body) {
+    return api.call(`/activity/growth/buddy/travel/${route}`, { method, body });
+  }
+};
+
+const balance = {
+  async read() {
+    const response = await api.call("/billing/meter/get-user-resource", {
+      method: "POST",
+      body: JSON.stringify({
+        PageNumber: 1, PageSize: 200, ProductCode: "p_tcaca", Status: [0, 3],
+        OnlyValidPeriod: true, PackageCodes: BILLING_PLANS, NeedInUsage: true
+      })
+    });
+    if (response.status === 401) throw new Error(EXPIRED);
+    if (!response.ok) throw new Error(explain(`HTTP_${response.status}`));
+    const rows = response.json?.data?.Response?.Data?.Accounts || [];
+    return rows.reduce((total, row) => {
+      const left = parseFloat(row.CycleCapacityRemainPrecise ?? row.CapacityRemainPrecise ?? "0") || 0;
+      const size = parseFloat(row.CycleCapacitySizePrecise ?? row.CapacitySizePrecise ?? "0") || 0;
+      total.remain += left;
+      if (left > 0) total.amount += size;
+      return total;
+    }, { remain: 0, amount: 0, rows });
+  }
+};
+
+const daily = {
+  async state() {
+    const response = await api.call("/billing/meter/checkin-status", { method: "POST", body: "{}" });
+    if (response.status === 401) throw new Error(EXPIRED);
+    if (response.json?.code === 10001 || response.json?.data?.today_checked_in === true) return "done";
+    if (!response.ok) return { state: "error", note: explain(`HTTP_${response.status}`) };
+    return "pending";
+  },
+  async claim() {
+    const response = await api.call("/billing/meter/daily-checkin", { method: "POST", body: "{}" });
+    if (response.status === 401) throw new Error(EXPIRED);
+    if (response.json?.code === 0 || response.json?.code === 10001) {
+      return { state: "done", amount: response.json?.data?.credit, fresh: response.json?.code === 0 };
+    }
+    if (!response.ok) return { state: "error", note: explain(`HTTP_${response.status}`) };
+    return await daily.state();
+  },
+  async settle(enabled) {
+    if (!enabled) return undefined;
+    const current = await daily.state();
+    if (current === "done" || typeof current === "object") return current;
+    return daily.claim();
+  }
+};
+
+const journey = {
+  async status() {
+    try {
+      const response = await api.trip("status");
+      if (response.json?.code !== 0) return null;
+      const data = response.json.data || {};
+      return {
+        state: data.state,
+        leftAt: data.depart_at, backAt: data.arrive_at, now: data.server_now,
+        hours: data.duration_hours ?? data.location?.duration_hours,
+        capped: data.daily_limit_reached, place: data.location?.name
+      };
+    } catch (_) { return null; }
+  },
+  async reward(leftAt) {
+    try {
+      const response = await api.trip("records?page=1&page_size=20");
+      if (response.json?.code !== 0) return undefined;
+      const rows = response.json?.data?.records || [];
+      const hit = leftAt == null ? undefined : rows.find((row) => row.depart_at === leftAt);
+      const value = (hit || rows[0])?.reward_credit;
+      return typeof value === "number" ? value : undefined;
+    } catch (_) { return undefined; }
+  },
+  async collect() {
+    const response = await api.trip("claim", "POST", "{}");
+    const json = response.json || {};
+    if (json.code === 0) return { done: true, amount: json.data?.credit };
+    const text = json.msg || "";
+    if (/no unclaimed|nothing to claim/i.test(text)) return { empty: true };
+    if (/not arrived|not yet/i.test(text)) return { waiting: true };
+    return { error: explain(text) };
+  },
+  async depart() {
+    const response = await api.trip("depart", "POST", JSON.stringify({ location_id: 1 }));
+    const json = response.json || {};
+    if (json.code !== 0) {
+      const text = json.msg || "";
+      if (/no active buddy|no buddy|already|traveling|in progress|daily limit|limit reached/i.test(text)) {
+        return { blocked: /daily limit|limit reached/i.test(text) ? "capped" : "busy", note: explain(text) };
       }
-    } catch (e) {
-      const msg = e.message || String(e);
-      if (msg === "AUTH_EXPIRED") snap.authProblem = "expired";
-      else snap.error = msg;
+      return { error: explain(text) };
+    }
+    let hours = json.data?.duration_hours ?? json.data?.duration;
+    const next = await journey.status();
+    const measured = next && next.leftAt != null && next.backAt != null && next.backAt > next.leftAt
+      ? Math.round(((next.backAt - next.leftAt) / 3600) * 10) / 10
+      : undefined;
+    if (measured > 0) hours = measured;
+    return { hours: hours > 0 ? hours : 0 };
+  },
+  async settle(shot, enabled) {
+    if (!enabled) return;
+    const status = await journey.status();
+    if (!status) return;
+    const travelling = status.state === "traveling";
+    const returned = status.state != null && !travelling;
+    const stamp = `${status.leftAt ?? status.backAt ?? status.state ?? ""}`;
+    const record = {};
+
+    if (returned && (shot.wasOnTrip || stamp !== shot.tripRewardKey)) {
+      const result = await journey.collect();
+      if (result.waiting) {
+        record.note = "行程尚未结算，稍后再试";
+      } else if (result.error) {
+        record.error = result.error;
+        if (shot.tripErrorDay !== clock.day()) {
+          record.warn = true;
+          shot.tripErrorDay = clock.day();
+        }
+      } else {
+        let amount = result.amount;
+        if (result.done && !(amount > 0)) amount = await journey.reward(status.leftAt);
+        record.claim = { amount: amount || 0 };
+        record.fresh = !!result.done;
+        shot.tripRewardKey = stamp;
+      }
+    }
+
+    if (returned && !status.capped && shot.tripLaunchDay !== clock.day()) {
+      const result = await journey.depart();
+      if (result.hours != null) {
+        record.launch = { hours: result.hours };
+        record.launched = true;
+      } else if (result.error) {
+        record.launch = { error: result.error };
+      }
+      shot.tripLaunchDay = clock.day();
+    }
+
+    shot.wasOnTrip = travelling;
+    if (Object.keys(record).length) {
+      shot.trip = { ...(shot.trip || {}), status, ...record };
+    } else {
+      shot.trip = { ...(shot.trip || {}), status };
+    }
+    return shot.trip;
+  }
+};
+
+const engine = {
+  async one(account) {
+    const state = await store.read();
+    const shot = state.snapshots[account.id] || {
+      result: null, updatedAt: 0, daily: null, trip: null,
+      error: "", authProblem: "", claimError: "",
+      tripLaunchDay: "", tripRewardKey: "", tripErrorDay: "", wasOnTrip: false
+    };
+    shot.error = "";
+    shot.authProblem = "";
+
+    await cookies.borrow(account, async () => {
+      try {
+        const [dailyInfo] = await Promise.all([
+          daily.settle(state.settings.dailyEnabled),
+          journey.settle(shot, state.settings.tripEnabled)
+        ]);
+        shot.daily = dailyInfo;
+        shot.result = await balance.read();
+        shot.updatedAt = Date.now();
+        if (/^账号 \d+$/.test(account.label || "")) {
+          const response = await api.call("/console/account");
+          const info = response.json?.data?.account || response.json?.data?.accountInfo || response.json?.data || response.json;
+          const title = info?.enterpriseUserName || info?.nickname || info?.displayName || info?.accountName;
+          if (title) {
+            account.label = `${title}`;
+            account.detail = `${info?.uin || info?.userId || info?.uid || ""}`;
+          }
+        }
+      } catch (error) {
+        if (error.message === EXPIRED) shot.authProblem = "expired";
+        else shot.error = error.message || `${error}`;
+      }
+    });
+
+    state.snapshots[account.id] = shot;
+  },
+  async all() {
+    if (syncing) return;
+    syncing = true;
+    try {
+      const state = await store.read();
+      for (const account of state.accounts) await engine.one(account);
+      await store.commit();
+      await engine.badge();
+      engine.announce(state);
+      chrome.runtime.sendMessage({ kind: "REFRESHED", state }).catch(() => {});
+    } finally {
+      syncing = false;
+    }
+  },
+  async badge() {
+    const state = await store.read();
+    const chosen = state.accounts.find((item) => item.id === state.activeId) || state.accounts[0];
+    const shot = chosen && state.snapshots[chosen.id];
+    if (!shot || !shot.result || shot.error || shot.authProblem) {
+      chrome.action.setBadgeText({ text: shot?.authProblem ? "!" : "…" });
+      chrome.action.setBadgeBackgroundColor({ color: shot?.authProblem ? "#d13438" : "#888" });
+      return;
+    }
+    const value = shot.result.remain;
+    const text = value >= 1000 ? `${Math.round(value / 100) / 10}k` : `${Math.round(value)}`;
+    chrome.action.setBadgeText({ text: text.slice(0, 5) });
+    chrome.action.setBadgeBackgroundColor({ color: "#1e415e" });
+  },
+  announce(state) {
+    const good = [];
+    const bad = [];
+    for (const account of state.accounts) {
+      const shot = state.snapshots[account.id];
+      if (!shot) continue;
+      if (shot.authProblem) { bad.push(`${account.label}: 登录已失效`); continue; }
+      if (shot.error) { bad.push(`${account.label}: 读取失败 (${shot.error})`); continue; }
+      if (shot.daily?.fresh) good.push(`${account.label}: 每日 +${shot.daily.amount || ""}`.trim());
+      if (shot.trip?.fresh) good.push(`${account.label}: 行程奖励 ${shot.trip.claim?.amount || 0}`);
+      if (shot.trip?.launched && shot.trip.launch?.hours != null) {
+        good.push(`${account.label}: 已出发 ${shot.trip.launch.hours} 小时`);
+      }
+    }
+    const message = [...good.slice(0, 4), ...bad.slice(0, 2)].join(" · ");
+    if (message) {
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icons/icon48.png"),
+        title: "WorkBuddy积分管家",
+        message
+      });
+    }
+  }
+};
+
+async function adoptCurrent() {
+  const state = await store.read();
+  const items = await cookies.collect();
+  if (!items.some((item) => item.name === "session" || item.name === "session_2")) {
+    return { ok: false, error: "未检测到登录信息，请先登录官网" };
+  }
+  let probe;
+  try { probe = await balance.read(); }
+  catch (error) { return { ok: false, error: `登录信息验证失败：${error.message || error}` }; }
+
+  const token = (items.find((item) => item.name === "session") || {}).value || "";
+  const found = state.accounts.find((account) =>
+    (account.cookies || []).some((item) => item.name === "session" && item.value === token)
+  );
+  if (found) {
+    state.activeId = found.id;
+    await store.commit();
+    return { ok: true, state, repeated: true, label: found.label, remain: probe.remain };
+  }
+
+  let nickname = "";
+  let detail = "";
+  try {
+    const response = await api.call("/console/account");
+    const info = response.json?.data?.account || response.json?.data?.accountInfo || response.json?.data || response.json;
+    nickname = info?.enterpriseUserName || info?.nickname || info?.displayName || info?.accountName || "";
+    detail = info?.uin || info?.userId || info?.uid || "";
+  } catch (_) { }
+
+  const account = {
+    id: newAccountId(),
+    label: nickname || `账号 ${state.accounts.length + 1}`,
+    detail: `${detail}`,
+    cookies: items,
+    createdAt: Date.now()
+  };
+  state.accounts.push(account);
+  state.activeId = account.id;
+  state.snapshots[account.id] = {
+    result: probe, updatedAt: Date.now(), daily: null, trip: null,
+    error: "", authProblem: "", claimError: "",
+    tripLaunchDay: "", tripRewardKey: "", tripErrorDay: "", wasOnTrip: false
+  };
+  await store.commit();
+  await engine.badge();
+  return { ok: true, state, label: account.label, remain: probe.remain };
+}
+
+async function handleActive(mode) {
+  const state = await store.read();
+  const account = state.accounts.find((item) => item.id === state.activeId);
+  if (!account) return { ok: false, error: "暂无账号" };
+  const shot = state.snapshots[account.id] || {
+    result: null, updatedAt: 0, daily: null, trip: null,
+    error: "", authProblem: "", claimError: "",
+    tripLaunchDay: "", tripRewardKey: "", tripErrorDay: "", wasOnTrip: false
+  };
+  let text = "";
+
+  await cookies.borrow(account, async () => {
+    try {
+      if (mode === "claim") {
+        const result = await journey.collect();
+        if (result.error) {
+          text = `领取失败：${result.error}`;
+          shot.claimError = result.error;
+        } else if (result.waiting) {
+          text = "行程尚未结算，稍后再领取";
+        } else if (result.empty) {
+          text = "当前没有可领取的行程奖励";
+        } else {
+          let amount = result.amount;
+          if (result.done && !(amount > 0)) amount = await journey.reward(shot.trip?.status?.leftAt);
+          shot.trip = { ...(shot.trip || {}), claim: { amount: amount || 0 } };
+          text = amount > 0 ? `已领取 ${amount} 积分` : "积分已领取";
+        }
+      } else {
+        const result = await journey.depart();
+        if (result.error) {
+          text = `出发失败：${result.error}`;
+          shot.trip = { ...(shot.trip || {}), launch: { error: result.error } };
+        } else if (result.blocked) {
+          text = result.note || "当前暂时无法出发";
+        } else {
+          text = `已出发，约 ${result.hours || 0} 小时后返回`;
+          shot.trip = { ...(shot.trip || {}), launch: { hours: result.hours || 0 } };
+        }
+        const status = await journey.status();
+        if (status) shot.trip = { ...(shot.trip || {}), status };
+      }
+    } catch (error) {
+      text = error.message === EXPIRED ? "登录已失效，请重新保存账号" : explain(error.message || error);
+      if (error.message === EXPIRED) shot.authProblem = "expired";
     }
   });
-  s.snapshots[acc.id] = snap;
+
+  state.snapshots[account.id] = shot;
+  await store.commit();
+  return { ok: true, state, message: text };
 }
 
-async function refreshAll() {
-  if (refreshing) return;
-  refreshing = true;
-  try {
-    const s = await ensureState();
-    for (const acc of s.accounts) await refreshAccount(acc);
-    await saveState();
-    await updateBadge();
-    notifyResults(s);
-    chrome.runtime.sendMessage({ type: "STATE_UPDATED", state: s }).catch(() => {});
-  } finally {
-    refreshing = false;
-  }
+async function openPlans() {
+  const state = await store.read();
+  const base = (await api.endpoint()) || state.settings.apiBase || "https://www.codetrip.cn";
+  await chrome.tabs.create({ url: `${base.replace(/\/$/, "")}/profile/plans-usage` });
 }
 
-function notifyResults(s) {
-  const info = [], warns = [];
-  for (const acc of s.accounts) {
-    const snap = s.snapshots[acc.id];
-    if (!snap) continue;
-    if (snap.authProblem) { warns.push(`${acc.label}: 登录已过期`); continue; }
-    if (snap.error) { warns.push(`${acc.label}: 拉取失败 (${snap.error})`); continue; }
-    if (snap.checkin?.freshlyClaimed) {
-      info.push(snap.checkin.credit ? `${acc.label}: 签到 +${snap.checkin.credit}` : `${acc.label}: 签到完成`);
-    }
-    if (snap.buddy?.freshlyClaimed) {
-      info.push(snap.buddy.claim?.credit > 0 ? `${acc.label}: 喵喵领取 ${snap.buddy.claim.credit}` : `${acc.label}: 喵喵积分已领取`);
-    }
-    if (snap.buddy?.freshlyDeparted && snap.buddy.depart?.hours != null) {
-      info.push(`${acc.label}: 喵喵已出发 (${snap.buddy.depart.hours}h)`);
-    }
-  }
-  const message = [...info.slice(0, 4), ...warns.slice(0, 2)].join(" · ");
-  if (message) {
-    chrome.notifications.create({
-      type: "basic", iconUrl: chrome.runtime.getURL("icons/icon48.png"),
-      title: "WorkBuddy自动签到", message,
-    });
-  }
-}
+const handlers = {
+  FETCH_STATE: async () => ({ ok: true, state: await store.read() }),
+  SYNC_ALL: async () => { await engine.all(); return { ok: true, state: await store.read() }; },
+  PICK: async (msg) => {
+    const state = await store.read();
+    if (!state.accounts.some((item) => item.id === msg.id)) return { ok: false, error: "账号不存在" };
+    state.activeId = msg.id;
+    await store.commit();
+    await cookies.wipe();
+    const chosen = state.accounts.find((item) => item.id === msg.id);
+    if (chosen) await cookies.restore(chosen.cookies);
+    await engine.badge();
+    return { ok: true, state };
+  },
+  ADOPT: async () => adoptCurrent(),
+  RENAME: async (msg) => {
+    const state = await store.read();
+    const account = state.accounts.find((item) => item.id === msg.id);
+    if (account) account.label = `${msg.name || ""}`.trim() || account.label;
+    await store.commit();
+    return { ok: true, state };
+  },
+  FORGET: async (msg) => {
+    const state = await store.read();
+    state.accounts = state.accounts.filter((item) => item.id !== msg.id);
+    delete state.snapshots[msg.id];
+    if (state.activeId === msg.id) state.activeId = state.accounts[0]?.id || "";
+    await store.commit();
+    await engine.badge();
+    return { ok: true, state };
+  },
+  WRITE_CONFIG: async (msg) => {
+    const state = await store.read();
+    state.settings = { ...state.settings, ...(msg.config || {}) };
+    await store.commit();
+    await schedule();
+    return { ok: true, state };
+  },
+  COLLECT: async () => handleActive("claim"),
+  DEPART: async () => handleActive("depart"),
+  PLANS: async () => { await openPlans(); return { ok: true }; }
+};
 
-async function updateBadge() {
-  const s = await ensureState();
-  const acc = s.accounts.find((a) => a.id === s.activeId) || s.accounts[0];
-  const snap = acc && s.snapshots[acc.id];
-  if (!snap || !snap.result || snap.error || snap.authProblem) {
-    chrome.action.setBadgeText({ text: snap?.authProblem ? "!" : "…" });
-    chrome.action.setBadgeBackgroundColor({ color: snap?.authProblem ? "#d13438" : "#888" });
+chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+  const action = handlers[msg?.kind];
+  if (!action) {
+    reply({ ok: false, error: "无法识别的请求" });
     return;
   }
-  const remain = snap.result.remain;
-  let text = remain >= 1000 ? `${Math.round(remain / 100) / 10}k` : `${Math.round(remain)}`;
-  if (text.length > 5) text = text.slice(0, 5);
-  chrome.action.setBadgeText({ text });
-  chrome.action.setBadgeBackgroundColor({ color: "#1e415e" });
-}
-
-async function fetchAccountName() {
-  try {
-    const { resp, json } = await apiFetch("/console/account", { method: "GET" });
-    if (!resp.ok) return null;
-
-    const info = json?.data?.account || json?.data?.accountInfo || json?.data || json;
-    const nickname = info?.enterpriseUserName || info?.nickname || info?.displayName || info?.accountName;
-    if (!nickname) return null;
-    const mask = info?.uin || info?.userId || info?.uid || "";
-    return { label: String(nickname), detail: String(mask) };
-  } catch (e) {
-    return null;
-  }
-}
-
-async function addCurrentAccount() {
-  const s = await ensureState();
-  const cookies = await readSiteCookies();
-  if (!cookies.some((c) => c.name === "session" || c.name === "session_2")) {
-    return { ok: false, error: "没有检测到登录态 Cookie，请先在浏览器登录 codebuddy.cn" };
-  }
-
-  let probe;
-  try {
-    probe = await fetchUsage();
-  } catch (e) {
-    return { ok: false, error: `登录态验证失败：${e.message || e}` };
-  }
-
-  const sessionVal = (cookies.find((c) => c.name === "session") || {}).value || "";
-  const existing = s.accounts.find((a) =>
-    (a.cookies || []).some((c) => c.name === "session" && c.value === sessionVal)
-  );
-  if (existing) {
-    s.activeId = existing.id;
-    await saveState();
-    return { ok: true, state: s, duplicate: true, label: existing.label, remain: probe.remain };
-  }
-
-  const identity = await fetchAccountName();
-  const acc = {
-    id: newId(),
-    label: identity?.label || `账号 ${s.accounts.length + 1}`,
-    detail: identity?.detail || "",
-    cookies,
-    createdAt: Date.now(),
-  };
-  s.accounts.push(acc);
-  s.activeId = acc.id;
-  s.snapshots[acc.id] = createSnapshot();
-  s.snapshots[acc.id].result = probe;
-  s.snapshots[acc.id].updatedAt = Date.now();
-  await saveState();
-  await updateBadge();
-  return { ok: true, state: s, label: acc.label, remain: probe.remain };
-}
-
-async function scheduleRefresh() {
-  const s = await ensureState();
-  await chrome.alarms.clear("refresh");
-  const mins = Number(s.settings.refreshIntervalMinutes) || 0;
-  if (mins > 0) await chrome.alarms.create("refresh", { periodInMinutes: mins });
-}
-
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === "refresh") {
-    await refreshAll();
-    const s = await ensureState();
-    s.lastAutoRefreshDate = todayStr();
-    await saveState();
-  }
-});
-
-chrome.runtime.onStartup.addListener(async () => {
-  await ensureState();
-  await scheduleRefresh();
-  await refreshAll();
-});
-
-chrome.runtime.onInstalled.addListener(async () => {
-  await ensureState();
-  await scheduleRefresh();
-  await refreshAll();
-});
-
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  (async () => {
-    const s = await ensureState();
-    switch (msg.type) {
-      case "GET_STATE":
-        sendResponse({ ok: true, state: s });
-        break;
-      case "REFRESH":
-        await refreshAll();
-        sendResponse({ ok: true, state: await ensureState() });
-        break;
-      case "SWITCH": {
-        const acc = s.accounts.find((a) => a.id === msg.id);
-        if (!acc) { sendResponse({ ok: false, error: "账号不存在" }); break; }
-        s.activeId = msg.id;
-        await saveState();
-        await clearSiteCookies();
-        await applyCookies(acc.cookies);
-        await updateBadge();
-        sendResponse({ ok: true, state: s });
-        break;
-      }
-      case "ADD_ACCOUNT": {
-        const result = await addCurrentAccount();
-        sendResponse(result);
-        break;
-      }
-      case "RENAME_ACCOUNT": {
-        const acc = s.accounts.find((a) => a.id === msg.id);
-        if (acc) { acc.label = msg.label; await saveState(); }
-        sendResponse({ ok: true, state: s });
-        break;
-      }
-      case "REMOVE_ACCOUNT":
-        s.accounts = s.accounts.filter((a) => a.id !== msg.id);
-        delete s.snapshots[msg.id];
-        if (s.activeId === msg.id) s.activeId = s.accounts[0]?.id || "";
-        await saveState();
-        await updateBadge();
-        sendResponse({ ok: true, state: s });
-        break;
-      case "UPDATE_SETTINGS":
-        s.settings = { ...s.settings, ...msg.settings };
-        await saveState();
-        await scheduleRefresh();
-        sendResponse({ ok: true, state: s });
-        break;
-      case "BUDDY_CLAIM":
-      case "BUDDY_DEPART": {
-        const acc = s.accounts.find((a) => a.id === s.activeId);
-        if (!acc) { sendResponse({ ok: false, error: "没有账号" }); break; }
-        const snap = s.snapshots[acc.id] || createSnapshot();
-        let message = "";
-        await withAccountCookies(acc, async () => {
-          try {
-            if (msg.type === "BUDDY_CLAIM") {
-              const c = await claimBuddy();
-              if (c.error) { snap.claimError = c.error; message = `领取失败：${c.error}`; }
-              else if (c.reason === "not-arrived") {
-                message = "喵喵还在旅行中，积分到账后再来领取";
-              } else if (c.reason === "none") {
-                message = "当前没有可领取的旅行积分";
-              } else {
-                let credit = c.credit;
-                if (c.claimed && !(credit > 0)) credit = await fetchTravelRewardCredit(snap.buddy?.status?.departAt);
-                if (!snap.buddy) snap.buddy = {};
-                snap.buddy.claim = { credit: credit || 0 };
-                message = (credit || 0) > 0 ? `已领取 ${credit} 积分` : (c.claimed ? "积分已领取" : "暂无可领取积分");
-              }
-            } else {
-              const d = await departBuddy();
-              if (d.error) {
-                message = `派出失败：${d.error}`;
-                if (!snap.buddy) snap.buddy = {};
-                snap.buddy.depart = { error: d.error };
-              } else if (d.reason) {
-
-                message = d.message || "当前暂时无法派出喵喵";
-              } else {
-                message = `喵喵已出发，约 ${d.hours || 0} 小时后返回`;
-                if (!snap.buddy) snap.buddy = {};
-                snap.buddy.depart = { hours: d.hours || 0 };
-              }
-            }
-            const st = await fetchBuddyStatus();
-            if (st) { if (!snap.buddy) snap.buddy = {}; snap.buddy.status = st; }
-          } catch (e) {
-            message = e.message === "AUTH_EXPIRED" ? "登录已过期，请重新添加账号" : friendlyMsg(e.message || e);
-            if (e.message === "AUTH_EXPIRED") snap.authProblem = "expired";
-          }
-        });
-        s.snapshots[acc.id] = snap;
-        await saveState();
-        sendResponse({ ok: true, state: s, message });
-        break;
-      }
-      case "OPEN_USAGE": {
-        const detected = await detectApiBase();
-        const base = (detected || s.settings.apiBase || "https://www.codebuddy.cn").replace(/\/$/, "");
-        const url = `${base}/profile/plans-usage`;
-        const tab = await chrome.tabs.create({ url });
-        sendResponse({ ok: true, tabId: tab.id });
-        break;
-      }
-      default:
-        sendResponse({ ok: false, error: "unknown message" });
-    }
-  })().catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
+  action(msg).then(reply).catch((error) => reply({ ok: false, error: error.message || `${error}` }));
   return true;
 });
 
-ensureState().then(async (s) => {
-  await scheduleRefresh();
-  await updateBadge();
-  const today = todayStr();
-  if (s.lastAutoRefreshDate !== today) {
-    await refreshAll();
-    s.lastAutoRefreshDate = today;
-    await saveState();
-  }
+async function schedule() {
+  const state = await store.read();
+  await chrome.alarms.clear("refresh");
+  await chrome.alarms.clear("auto-sync");
+  const minutes = Number(state.settings.refreshIntervalMinutes) || 0;
+  if (minutes > 0) await chrome.alarms.create("auto-sync", { periodInMinutes: minutes });
+}
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== "auto-sync") return;
+  await engine.all();
+  const state = await store.read();
+  state.lastAutoRefreshDate = clock.day();
+  await store.commit();
 });
+
+async function launch(force) {
+  const state = await store.read();
+  await schedule();
+  await engine.badge();
+  if (force || state.lastAutoRefreshDate !== clock.day()) {
+    await engine.all();
+    state.lastAutoRefreshDate = clock.day();
+    await store.commit();
+  }
+}
+
+chrome.runtime.onStartup.addListener(() => launch(true));
+chrome.runtime.onInstalled.addListener(() => launch(true));
+launch(false);
