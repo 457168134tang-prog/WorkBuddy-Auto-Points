@@ -24,7 +24,7 @@ const BASE_CONFIG = {
   snapshots: {},
   lastAutoRefreshDate: "",
   settings: {
-    apiBase: "https://www.codebuddy.cn",
+    apiBase: "https://www.workbuddy.cn",
     refreshIntervalMinutes: 30,
     dailyEnabled: true,
     tripEnabled: true
@@ -54,7 +54,7 @@ const store = {
     }
     cached.settings = { ...BASE_CONFIG.settings, ...(saved.settings || {}) };
     if (!/^https:\/\/www\.(codebuddy|workbuddy)\.cn$/.test(cached.settings.apiBase || "")) {
-      cached.settings.apiBase = "https://www.codebuddy.cn";
+      cached.settings.apiBase = "https://www.workbuddy.cn";
     }
     cached.snapshots = saved.snapshots || {};
     cached.accounts = saved.accounts || [];
@@ -154,13 +154,16 @@ const api = {
   },
   async call(route, options = {}) {
     const state = await store.read();
-    const base = (await api.endpoint()) || state.settings.apiBase || "https://www.codebuddy.cn";
-    const response = await fetch(`${base.replace(/\/$/, "")}${route}`, {
+    const base = ((await api.endpoint()) || state.settings.apiBase || "https://www.workbuddy.cn").replace(/\/$/, "");
+    const isTrip = route.startsWith("/activity/growth/buddy/travel/");
+    const response = await fetch(`${base}${route}`, {
       method: options.method || "GET",
       credentials: "include",
       headers: {
         "content-type": "application/json",
         accept: "application/json, text/plain, */*",
+        origin: base,
+        referer: `${base}${isTrip ? "/profile/growth-center" : "/profile/plans-usage"}`,
         "x-client-platform": "web"
       },
       body: options.body,
@@ -395,21 +398,38 @@ const engine = {
       if (!shot) continue;
       if (shot.authProblem) { bad.push(`${account.label}: 登录已失效`); continue; }
       if (shot.error) { bad.push(`${account.label}: 读取失败 (${shot.error})`); continue; }
-      if (shot.daily?.fresh) good.push(`${account.label}: 每日 +${shot.daily.amount || ""}`.trim());
-      if (shot.trip?.fresh) good.push(`${account.label}: 行程奖励 ${shot.trip.claim?.amount || 0}`);
+      const dailyState = typeof shot.daily === "string" ? shot.daily : shot.daily?.state;
+      if (shot.daily?.fresh) {
+        good.push(`${account.label}: 每日 +${shot.daily.amount || ""}`.trim());
+      } else if (dailyState === "pending") {
+        bad.push(`${account.label}: 今日积分待领取`);
+      } else if (dailyState === "error") {
+        bad.push(`${account.label}: 每日领取失败${shot.daily?.note ? ` (${shot.daily.note})` : ""}`);
+      }
+      if (shot.trip?.fresh) {
+        good.push(`${account.label}: 行程奖励 ${shot.trip.claim?.amount || 0}`);
+      } else if (shot.trip?.warn && (shot.trip.error || shot.trip.claim?.error)) {
+        bad.push(`${account.label}: 行程领取失败 (${shot.trip.error || shot.trip.claim.error})`);
+      } else if (shot.claimError) {
+        bad.push(`${account.label}: 行程领取失败 (${shot.claimError})`);
+      }
       if (shot.trip?.launched && shot.trip.launch?.hours != null) {
         good.push(`${account.label}: 已出发 ${shot.trip.launch.hours} 小时`);
+      } else if (shot.trip?.launch?.error) {
+        bad.push(`${account.label}: 出发失败 (${shot.trip.launch.error})`);
       }
     }
-    const message = [...good.slice(0, 4), ...bad.slice(0, 2)].join(" · ");
-    if (message) {
+    const show = (title, lines) => {
+      if (!lines.length) return;
       chrome.notifications.create({
         type: "basic",
         iconUrl: chrome.runtime.getURL("icons/icon48.png"),
-        title: "WorkBuddy积分管家",
-        message
+        title,
+        message: lines.slice(0, 5).join(" · ")
       });
-    }
+    };
+    show("WorkBuddy积分管家", good);
+    show("WorkBuddy积分管家提醒", bad);
   }
 };
 
@@ -516,7 +536,7 @@ async function handleActive(mode) {
 
 async function siteBase() {
   const state = await store.read();
-  return ((await api.endpoint()) || state.settings.apiBase || "https://www.codebuddy.cn").replace(/\/$/, "");
+  return ((await api.endpoint()) || state.settings.apiBase || "https://www.workbuddy.cn").replace(/\/$/, "");
 }
 async function openHome() {
   await chrome.tabs.create({ url: await siteBase() });
