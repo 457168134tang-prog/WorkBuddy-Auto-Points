@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WorkBuddy积分管家</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="top">
+      <img class="mark" src="icons/icon48.png" alt="" />
+      <div class="names">
+        <strong>WorkBuddy积分管家</strong>
+        <span id="who">加载中…</span>
+      </div>
+      <button class="round" data-act="SYNC_ALL" title="同步所有账号">⟳</button>
+    </header>
+
+    <div class="picker">
+      <select id="whoPick" aria-label="切换账号"><option>加载中…</option></select>
+      <button class="chip" data-act="RENAME">改名</button>
+    </div>
+
+    <section class="overview" id="overview">
+      <div class="figures">
+        <span class="caption">剩余</span>
+        <b id="leftNum">—</b>
+        <span class="slash">/</span>
+        <span class="caption">总量</span>
+        <span id="allNum">—</span>
+        <em id="ratio"></em>
+      </div>
+      <div class="meter"><i id="meterFill"></i></div>
+    </section>
+
+    <div class="blank" id="blank" hidden>
+      <p>还没有账号</p>
+      <p class="dim">先登录 codebuddy.cn 或 workbuddy.cn，再点「保存当前账号」</p>
+    </div>
+
+    <table class="plans" id="planTable">
+      <thead><tr><th>套餐</th><th>剩余</th><th>总量</th><th>到期</th></tr></thead>
+      <tbody id="planBody"></tbody>
+    </table>
+
+    <div class="flags" id="flags"></div>
+    <div class="trip">
+      <button class="chip" id="claimBtn" data-act="COLLECT" hidden>领取奖励</button>
+      <button class="chip" id="departBtn" data-act="DEPART" hidden>发起行程</button>
+    </div>
+    <p class="stamp" id="lastTime"></p>
+
+    <div class="pair">
+      <button class="chip solid" data-act="HOME">打开官网</button>
+      <button class="chip solid" data-act="ADOPT">保存当前账号</button>
+    </div>
+    <div class="pair">
+      <button class="chip" data-act="PLANS">用量页</button>
+      <button class="chip danger" data-act="FORGET">移除账号</button>
+    </div>
+
+    <details class="config" id="configBox">
+      <summary>选项</summary>
+      <label>服务地址（通常自动识别）<input id="apiHost" type="text" /></label>
+      <label>自动同步间隔（分钟，0 关闭）<input id="minutes" type="number" min="0" /></label>
+      <label class="toggle"><input id="autoDaily" type="checkbox" /> 自动领取每日积分</label>
+      <label class="toggle"><input id="autoTrip" type="checkbox" /> 自动处理积分行程</label>
+      <button class="chip solid wide" data-act="WRITE_CONFIG">保存选项</button>
+    </details>
+
+    <div class="flash" id="flash" hidden></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

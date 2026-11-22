@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "WorkBuddy积分管家 — Chrome / Edge 插件",
+  "version": "1.2.0",
+  "description": "在工具栏查看 WorkBuddy 积分，自动领取每日积分和行程奖励，支持多账号。",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "cookies",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://www.codebuddy.cn/*",
+    "https://codebuddy.cn/*",
+    "https://www.workbuddy.cn/*",
+    "https://workbuddy.cn/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "WorkBuddy积分管家",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
