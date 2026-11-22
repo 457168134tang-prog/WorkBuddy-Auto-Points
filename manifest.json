@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "WorkBuddy自动签到— Chrome / Edge 浏览器插件",
+  "version": "1.1.0",
+  "description": "在浏览器工具栏显示 WorkBuddy 积分，自动签到、喵喵旅行，支持多账号切换。使用浏览器现有登录态，无需 Token。",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "cookies",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://www.codebuddy.cn/*",
+    "https://codebuddy.cn/*",
+    "https://www.workbuddy.cn/*",
+    "https://workbuddy.cn/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "WorkBuddy自动签到",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
