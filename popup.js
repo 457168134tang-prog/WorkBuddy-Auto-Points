@@ -197,7 +197,7 @@ async function act(kind) {
   if (kind === "WRITE_CONFIG") {
     const reply = await ask("WRITE_CONFIG", {
       config: {
-        apiBase: el("apiHost").value.trim() || "https://www.codetrip.cn",
+        apiBase: el("apiHost").value.trim() || "https://www.codebuddy.cn",
         refreshIntervalMinutes: Number(el("minutes").value) || 0,
         dailyEnabled: el("autoDaily").checked,
         tripEnabled: el("autoTrip").checked

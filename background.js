@@ -1,6 +1,6 @@
 const HOSTS = [
-  "www.codetrip.cn", "codetrip.cn",
-  "www.worktrip.cn", "worktrip.cn"
+  "www.codebuddy.cn", "codebuddy.cn",
+  "www.workbuddy.cn", "workbuddy.cn"
 ];
 
 const SESSION_FIELDS = new Set([
@@ -24,7 +24,7 @@ const BASE_CONFIG = {
   snapshots: {},
   lastAutoRefreshDate: "",
   settings: {
-    apiBase: "https://www.codetrip.cn",
+    apiBase: "https://www.codebuddy.cn",
     refreshIntervalMinutes: 30,
     dailyEnabled: true,
     tripEnabled: true
@@ -53,6 +53,9 @@ const store = {
       if (saved[key] !== undefined) cached[key] = saved[key];
     }
     cached.settings = { ...BASE_CONFIG.settings, ...(saved.settings || {}) };
+    if (!/^https:\/\/www\.(codebuddy|workbuddy)\.cn$/.test(cached.settings.apiBase || "")) {
+      cached.settings.apiBase = "https://www.codebuddy.cn";
+    }
     cached.snapshots = saved.snapshots || {};
     cached.accounts = saved.accounts || [];
     return cached;
@@ -145,13 +148,13 @@ const api = {
       (item.domain === host || item.domain === `.${host}`) &&
       (item.name === "session" || item.name === "session_2")
     );
-    if (has("www.codetrip.cn")) return "https://www.codetrip.cn";
-    if (has("www.worktrip.cn")) return "https://www.worktrip.cn";
+    if (has("www.codebuddy.cn")) return "https://www.codebuddy.cn";
+    if (has("www.workbuddy.cn")) return "https://www.workbuddy.cn";
     return null;
   },
   async call(route, options = {}) {
     const state = await store.read();
-    const base = (await api.endpoint()) || state.settings.apiBase || "https://www.codetrip.cn";
+    const base = (await api.endpoint()) || state.settings.apiBase || "https://www.codebuddy.cn";
     const response = await fetch(`${base.replace(/\/$/, "")}${route}`, {
       method: options.method || "GET",
       credentials: "include",
@@ -511,10 +514,15 @@ async function handleActive(mode) {
   return { ok: true, state, message: text };
 }
 
-async function openPlans() {
+async function siteBase() {
   const state = await store.read();
-  const base = (await api.endpoint()) || state.settings.apiBase || "https://www.codetrip.cn";
-  await chrome.tabs.create({ url: `${base.replace(/\/$/, "")}/profile/plans-usage` });
+  return ((await api.endpoint()) || state.settings.apiBase || "https://www.codebuddy.cn").replace(/\/$/, "");
+}
+async function openHome() {
+  await chrome.tabs.create({ url: await siteBase() });
+}
+async function openPlans() {
+  await chrome.tabs.create({ url: `${await siteBase()}/profile/plans-usage` });
 }
 
 const handlers = {
@@ -557,6 +565,7 @@ const handlers = {
   },
   COLLECT: async () => handleActive("claim"),
   DEPART: async () => handleActive("depart"),
+  HOME: async () => { await openHome(); return { ok: true }; },
   PLANS: async () => { await openPlans(); return { ok: true }; }
 };
 
