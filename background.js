@@ -74,12 +74,12 @@ const expiryTime = (value) => {
 const newAccountId = () => `acct_${(globalThis.crypto?.randomUUID?.() || `${Date.now()}${Math.random()}`).slice(0, 12)}`;
 
 const ERROR_RULES = [
-  [/not arrived|not yet|still traveling|in progress/i, "行程尚未结束，结束后再领取奖励"],
-  [/no unclaimed|no travel|nothing to claim/i, "当前没有可领取的行程奖励"],
-  [/no active buddy|no buddy/i, "当前没有可出发的行程，可能进行中或今日已满"],
-  [/daily limit|limit reached|reached.*limit/i, "今日已达上限，明天再来"],
-  [/already/i, "已经处理过，无需重复"],
-  [new RegExp(EXPIRED, "i"), "登录已失效，请重新保存账号"],
+  [/not arrived|not yet|still traveling|in progress/i, "行程还在进行中，结束后再领取奖励"],
+  [/no unclaimed|no travel|nothing to claim/i, "目前没有可领取的行程奖励"],
+  [/no active buddy|no buddy/i, "暂时无法发起行程：可能还在途中，或今日已达上限"],
+  [/daily limit|limit reached|reached.*limit/i, "今日行程已达上限，请明天再试"],
+  [/already/i, "已处理过，无需重复操作"],
+  [new RegExp(EXPIRED, "i"), "登录已失效，请重新登录并保存当前账号"],
   [/^HTTP_/, "网络请求失败，请稍后重试"]
 ];
 
@@ -396,27 +396,27 @@ const engine = {
     for (const account of state.accounts) {
       const shot = state.snapshots[account.id];
       if (!shot) continue;
-      if (shot.authProblem) { bad.push(`${account.label}: 登录已失效`); continue; }
-      if (shot.error) { bad.push(`${account.label}: 读取失败 (${shot.error})`); continue; }
+      if (shot.authProblem) { bad.push(`${account.label}: 登录已失效，请重新登录`); continue; }
+      if (shot.error) { bad.push(`${account.label}: 积分读取失败：${shot.error}`); continue; }
       const dailyState = typeof shot.daily === "string" ? shot.daily : shot.daily?.state;
       if (shot.daily?.fresh) {
-        good.push(`${account.label}: 每日 +${shot.daily.amount || ""}`.trim());
+        good.push(`${account.label}: 每日积分 +${shot.daily.amount || ""}`.trim());
       } else if (dailyState === "pending") {
-        bad.push(`${account.label}: 今日积分待领取`);
+        bad.push(`${account.label}: 今日积分未领取，稍后会自动重试`);
       } else if (dailyState === "error") {
-        bad.push(`${account.label}: 每日领取失败${shot.daily?.note ? ` (${shot.daily.note})` : ""}`);
+        bad.push(`${account.label}: 每日积分领取失败${shot.daily?.note ? `：${shot.daily.note}` : ""}`);
       }
       if (shot.trip?.fresh) {
-        good.push(`${account.label}: 行程奖励 ${shot.trip.claim?.amount || 0}`);
+        good.push(`${account.label}: 行程奖励 +${shot.trip.claim?.amount || 0} 积分`);
       } else if (shot.trip?.warn && (shot.trip.error || shot.trip.claim?.error)) {
-        bad.push(`${account.label}: 行程领取失败 (${shot.trip.error || shot.trip.claim.error})`);
+        bad.push(`${account.label}: 行程奖励领取失败：${shot.trip.error || shot.trip.claim.error}`);
       } else if (shot.claimError) {
-        bad.push(`${account.label}: 行程领取失败 (${shot.claimError})`);
+        bad.push(`${account.label}: 行程奖励领取失败：${shot.claimError}`);
       }
       if (shot.trip?.launched && shot.trip.launch?.hours != null) {
-        good.push(`${account.label}: 已出发 ${shot.trip.launch.hours} 小时`);
+        good.push(`${account.label}: 行程已出发，预计 ${shot.trip.launch.hours} 小时后返回`);
       } else if (shot.trip?.launch?.error) {
-        bad.push(`${account.label}: 出发失败 (${shot.trip.launch.error})`);
+        bad.push(`${account.label}: 发起行程失败：${shot.trip.launch.error}`);
       }
     }
     const show = (title, lines) => {
@@ -429,7 +429,7 @@ const engine = {
       });
     };
     show("WorkBuddy积分管家", good);
-    show("WorkBuddy积分管家提醒", bad);
+    show("WorkBuddy积分管家 - 需要你处理", bad);
   }
 };
 
@@ -437,7 +437,7 @@ async function adoptCurrent() {
   const state = await store.read();
   const items = await cookies.collect();
   if (!items.some((item) => item.name === "session" || item.name === "session_2")) {
-    return { ok: false, error: "未检测到登录信息，请先登录官网" };
+    return { ok: false, error: "未检测到登录信息，请先在浏览器登录 codebuddy.cn 或 workbuddy.cn" };
   }
   let probe;
   try { probe = await balance.read(); }
@@ -484,7 +484,7 @@ async function adoptCurrent() {
 async function handleActive(mode) {
   const state = await store.read();
   const account = state.accounts.find((item) => item.id === state.activeId);
-  if (!account) return { ok: false, error: "暂无账号" };
+  if (!account) return { ok: false, error: "请先保存账号" };
   const shot = state.snapshots[account.id] || {
     result: null, updatedAt: 0, daily: null, trip: null,
     error: "", authProblem: "", claimError: "",
@@ -497,34 +497,34 @@ async function handleActive(mode) {
       if (mode === "claim") {
         const result = await journey.collect();
         if (result.error) {
-          text = `领取失败：${result.error}`;
+          text = `行程奖励领取失败：${result.error}`;
           shot.claimError = result.error;
         } else if (result.waiting) {
-          text = "行程尚未结算，稍后再领取";
+          text = "行程奖励尚未到账，请稍后再试";
         } else if (result.empty) {
-          text = "当前没有可领取的行程奖励";
+          text = "目前没有可领取的行程奖励";
         } else {
           let amount = result.amount;
           if (result.done && !(amount > 0)) amount = await journey.reward(shot.trip?.status?.leftAt);
           shot.trip = { ...(shot.trip || {}), claim: { amount: amount || 0 } };
-          text = amount > 0 ? `已领取 ${amount} 积分` : "积分已领取";
+          text = amount > 0 ? `已领取 ${amount} 积分` : "行程奖励已领取";
         }
       } else {
         const result = await journey.depart();
         if (result.error) {
-          text = `出发失败：${result.error}`;
+          text = `发起行程失败：${result.error}`;
           shot.trip = { ...(shot.trip || {}), launch: { error: result.error } };
         } else if (result.blocked) {
-          text = result.note || "当前暂时无法出发";
+          text = result.note || "当前无法发起行程，请稍后再试";
         } else {
-          text = `已出发，约 ${result.hours || 0} 小时后返回`;
+          text = result.hours > 0 ? `已出发，预计 ${result.hours} 小时后返回` : "已出发，预计返回时间暂未获取";
           shot.trip = { ...(shot.trip || {}), launch: { hours: result.hours || 0 } };
         }
         const status = await journey.status();
         if (status) shot.trip = { ...(shot.trip || {}), status };
       }
     } catch (error) {
-      text = error.message === EXPIRED ? "登录已失效，请重新保存账号" : explain(error.message || error);
+      text = error.message === EXPIRED ? "登录已失效，请重新登录并保存当前账号" : explain(error.message || error);
       if (error.message === EXPIRED) shot.authProblem = "expired";
     }
   });

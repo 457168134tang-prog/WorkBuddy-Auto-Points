@@ -47,7 +47,7 @@ function paint() {
   const picker = el("whoPick");
   picker.innerHTML = "";
   if (!list.length) {
-    picker.innerHTML = '<option value="">暂无账号</option>';
+    picker.innerHTML = '<option value="">请先保存账号</option>';
   } else {
     for (const item of list) {
       const option = document.createElement("option");
@@ -59,12 +59,13 @@ function paint() {
   }
   const active = list.find((item) => item.id === state.activeId) || list[0];
   const shot = active ? state.snapshots[active.id] : null;
-  el("who").textContent = active ? `当前：${active.label || "账号"}` : "尚未保存账号";
+  el("who").textContent = active ? `当前账号：${active.label || "账号"}` : "尚未保存账号";
   el("blank").hidden = !!active;
   el("overview").hidden = !active || !shot?.result;
   el("planTable").hidden = !active || !shot?.result;
   el("flags").innerHTML = "";
-  el("tripBtns").hidden = true;
+  el("claimBtn").hidden = true;
+  el("departBtn").hidden = true;
   el("lastTime").textContent = "";
 
   if (!active) {
@@ -75,9 +76,9 @@ function paint() {
     return;
   }
   if (shot?.authProblem) {
-    el("flags").innerHTML = '<span>⚠ 登录已失效，请重新保存账号</span>';
+    el("flags").innerHTML = '<span>⚠ 登录已失效，请重新登录</span>';
   } else if (shot?.error) {
-    el("flags").innerHTML = `<span>⚠ 读取失败：${safe(shot.error)}</span>`;
+    el("flags").innerHTML = `<span>⚠ 积分读取失败：${safe(shot.error)}</span>`;
   }
 
   const result = shot?.result;
@@ -114,7 +115,7 @@ function paint() {
   const flags = [];
   if (state.settings.dailyEnabled && shot?.daily) {
     const phase = typeof shot.daily === "string" ? shot.daily : shot.daily.state;
-    flags.push(phase === "done" ? "✓ 今日已领" : phase === "pending" ? "○ 今日待领" : "⚠ 领取异常");
+    flags.push(phase === "done" ? "✓ 今日积分已领取" : phase === "pending" ? "○ 今日积分待领取" : "⚠ 积分状态异常");
   }
   if (state.settings.tripEnabled && shot?.trip?.status) {
     const status = shot.trip.status;
@@ -123,12 +124,14 @@ function paint() {
       const hh = `${Math.floor(left / 3600)}`.padStart(2, "0");
       const mm = `${Math.floor((left % 3600) / 60)}`.padStart(2, "0");
       const ss = `${left % 60}`.padStart(2, "0");
-      flags.push(`✿ 行程倒计时 ${hh}:${mm}:${ss}`);
+      flags.push(`✿ 行程进行中，剩余 ${hh}:${mm}:${ss}`);
     } else if (status.capped) {
-      flags.push("✿ 今日已满");
+      flags.push("✿ 今日行程已达上限，明天可继续出发");
+      el("claimBtn").hidden = false;
     } else {
-      flags.push("✿ 奖励可领 / 可出发");
-      el("tripBtns").hidden = false;
+      flags.push("✿ 奖励可领，可继续出发");
+      el("claimBtn").hidden = false;
+      el("departBtn").hidden = false;
     }
   }
   el("flags").innerHTML += flags.map((text) => `<span>${text}</span>`).join("");
@@ -161,7 +164,7 @@ async function adopt() {
   }
   view = reply.state;
   paint();
-  notice(reply.repeated ? `${reply.label} 已存在，已切换到它` : `已保存 ${reply.label}`);
+  notice(reply.repeated ? `${reply.label} 已存在，已切换到它` : `账号 ${reply.label} 已保存`);
 }
 
 async function rename() {
@@ -211,9 +214,9 @@ async function act(kind) {
   if (reply.ok) {
     if (reply.state) view = reply.state;
     paint();
-    notice(reply.message || "处理完成");
+    notice(reply.message || "操作完成");
   } else {
-    notice(`处理失败：${reply.error || ""}`);
+    notice(`操作失败：${reply.error || ""}`);
   }
 }
 
