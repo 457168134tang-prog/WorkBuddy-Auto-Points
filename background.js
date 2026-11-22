@@ -538,8 +538,8 @@ async function siteBase() {
   const state = await store.read();
   return ((await api.endpoint()) || state.settings.apiBase || "https://www.workbuddy.cn").replace(/\/$/, "");
 }
-async function openHome() {
-  await chrome.tabs.create({ url: await siteBase() });
+async function openLogin() {
+  await chrome.tabs.create({ url: `${await siteBase()}/login/` });
 }
 async function openPlans() {
   await chrome.tabs.create({ url: `${await siteBase()}/profile/plans-usage` });
@@ -585,7 +585,7 @@ const handlers = {
   },
   COLLECT: async () => handleActive("claim"),
   DEPART: async () => handleActive("depart"),
-  HOME: async () => { await openHome(); return { ok: true }; },
+  LOGIN: async () => { await openLogin(); return { ok: true }; },
   PLANS: async () => { await openPlans(); return { ok: true }; }
 };
 
