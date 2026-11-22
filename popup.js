@@ -1,6 +1,8 @@
 const el = (id) => document.getElementById(id);
 let view = null;
 let timer = null;
+let renameTarget = "";
+let forgetTarget = "";
 
 function ask(kind, extra = {}) {
   return new Promise((done) => {
@@ -31,6 +33,15 @@ function notice(text) {
   clearTimeout(timer);
   timer = setTimeout(() => { box.hidden = true; }, 3200);
 }
+function hideInline() {
+  el("renameBox").hidden = true;
+  el("forgetBox").hidden = true;
+  renameTarget = "";
+  forgetTarget = "";
+}
+function activeAccount() {
+  return view?.accounts.find((item) => item.id === view.activeId) || null;
+}
 
 async function load() {
   const reply = await ask("FETCH_STATE");
@@ -43,6 +54,7 @@ async function load() {
 function paint() {
   const state = view;
   if (!state) return;
+  hideInline();
   const list = state.accounts || [];
   const picker = el("whoPick");
   picker.innerHTML = "";
@@ -57,12 +69,14 @@ function paint() {
       picker.appendChild(option);
     }
   }
-  const active = list.find((item) => item.id === state.activeId) || list[0];
+  const active = activeAccount();
   const shot = active ? state.snapshots[active.id] : null;
   el("who").textContent = active ? `当前账号：${active.label || "账号"}` : "尚未保存账号";
   el("blank").hidden = !!active;
   el("overview").hidden = !active || !shot?.result;
   el("planTable").hidden = !active || !shot?.result;
+  el("renameBtn").disabled = !active;
+  el("forgetBtn").disabled = !active;
   el("flags").innerHTML = "";
   el("claimBtn").hidden = true;
   el("departBtn").hidden = true;
@@ -76,7 +90,7 @@ function paint() {
     return;
   }
   if (shot?.authProblem) {
-    el("flags").innerHTML = '<span>⚠ 登录已失效，请重新登录</span>';
+    el("flags").innerHTML = '<span>⚠ 登录已失效，请重新登录并保存账号</span>';
   } else if (shot?.error) {
     el("flags").innerHTML = `<span>⚠ 积分读取失败：${safe(shot.error)}</span>`;
   }
@@ -167,36 +181,71 @@ async function adopt() {
   notice(reply.repeated ? `${reply.label} 已存在，已切换到它` : `账号 ${reply.label} 已保存`);
 }
 
-async function rename() {
-  const state = view;
-  const active = state?.accounts.find((item) => item.id === state.activeId);
-  if (!active) return;
-  const name = prompt("为这个账号设置名称：", active.label || "");
-  if (!name || !name.trim()) return;
-  const reply = await ask("RENAME", { id: active.id, name: name.trim() });
+function rename() {
+  const active = activeAccount();
+  if (!active) return notice("请先保存账号");
+  hideInline();
+  renameTarget = active.id;
+  el("renameInput").value = active.label || "";
+  el("renameBox").hidden = false;
+  el("renameInput").focus();
+  el("renameInput").select();
+}
+
+async function saveRename() {
+  if (!renameTarget) return;
+  const name = el("renameInput").value.trim();
+  if (!name) return notice("名称不能为空");
+  const reply = await ask("RENAME", { id: renameTarget, name });
+  hideInline();
   if (reply.ok) {
     view = reply.state;
     paint();
+    notice("名称已更新");
+  } else {
+    notice(`改名失败：${reply.error || ""}`);
   }
 }
 
-async function forget() {
-  const state = view;
-  if (!state?.activeId) return;
-  if (!confirm("确定移除这个账号？仅清除本插件保存的登录信息，不影响网站登录。")) return;
-  const reply = await ask("FORGET", { id: state.activeId });
+function forget() {
+  const active = activeAccount();
+  if (!active) return notice("请先保存账号");
+  hideInline();
+  forgetTarget = active.id;
+  el("forgetText").textContent = `移除「${active.label || "账号"}」？`;
+  el("forgetBox").hidden = false;
+}
+
+async function confirmForget() {
+  if (!forgetTarget) return;
+  const reply = await ask("FORGET", { id: forgetTarget });
+  hideInline();
   if (reply.ok) {
     view = reply.state;
     paint();
     notice("账号已移除");
+  } else {
+    notice(`移除失败：${reply.error || ""}`);
   }
+}
+
+async function openPage(kind, starting, done) {
+  notice(starting);
+  const reply = await ask(kind);
+  notice(reply.ok ? done : `打开失败：${reply.error || ""}`);
 }
 
 async function act(kind) {
   if (kind === "SYNC_ALL") return refresh();
   if (kind === "ADOPT") return adopt();
   if (kind === "RENAME") return rename();
+  if (kind === "RENAME_SAVE") return saveRename();
+  if (kind === "RENAME_CANCEL") return hideInline();
   if (kind === "FORGET") return forget();
+  if (kind === "FORGET_YES") return confirmForget();
+  if (kind === "FORGET_NO") return hideInline();
+  if (kind === "LOGIN") return openPage(kind, "正在打开登录页…", "登录页已打开，登录后可点「保存当前账号」");
+  if (kind === "PLANS") return openPage(kind, "正在打开用量页…", "用量页已打开");
   if (kind === "WRITE_CONFIG") {
     const reply = await ask("WRITE_CONFIG", {
       config: {
@@ -222,7 +271,7 @@ async function act(kind) {
 
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-act]");
-  if (button) act(button.dataset.act);
+  if (button && !button.disabled) act(button.dataset.act);
 });
 
 el("whoPick").addEventListener("change", async (event) => {
@@ -232,6 +281,15 @@ el("whoPick").addEventListener("change", async (event) => {
     paint();
     notice("已切换账号");
   }
+});
+
+el("renameInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") saveRename();
+  if (event.key === "Escape") hideInline();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") hideInline();
 });
 
 chrome.runtime.onMessage.addListener((message) => {

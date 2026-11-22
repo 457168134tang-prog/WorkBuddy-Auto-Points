@@ -14,12 +14,18 @@
         <strong>WorkBuddy积分管家</strong>
         <span id="who">加载中…</span>
       </div>
-      <button class="round" data-act="SYNC_ALL" title="同步所有账号">⟳</button>
+      <button class="round" data-act="SYNC_ALL" title="立即同步所有账号" aria-label="立即同步所有账号">⟳</button>
     </header>
 
     <div class="picker">
       <select id="whoPick" aria-label="切换账号"><option>加载中…</option></select>
-      <button class="chip" data-act="RENAME">改名</button>
+      <button class="chip" id="renameBtn" data-act="RENAME">改名</button>
+    </div>
+
+    <div class="inline-edit" id="renameBox" hidden>
+      <input id="renameInput" type="text" maxlength="24" aria-label="账号名称" />
+      <button class="chip solid mini" data-act="RENAME_SAVE">保存</button>
+      <button class="chip mini" data-act="RENAME_CANCEL">取消</button>
     </div>
 
     <section class="overview" id="overview">
@@ -46,7 +52,7 @@
 
     <div class="flags" id="flags"></div>
     <div class="trip">
-      <button class="chip" id="claimBtn" data-act="COLLECT" hidden>领取奖励</button>
+      <button class="chip solid" id="claimBtn" data-act="COLLECT" hidden>领取奖励</button>
       <button class="chip" id="departBtn" data-act="DEPART" hidden>发起行程</button>
     </div>
     <p class="stamp" id="lastTime"></p>
@@ -57,7 +63,13 @@
     </div>
     <div class="pair">
       <button class="chip" data-act="PLANS">用量页</button>
-      <button class="chip danger" data-act="FORGET">移除账号</button>
+      <button class="chip danger" id="forgetBtn" data-act="FORGET">移除账号</button>
+    </div>
+
+    <div class="inline-edit danger-edit" id="forgetBox" hidden>
+      <span id="forgetText">确定移除？</span>
+      <button class="chip danger mini" data-act="FORGET_YES">确认移除</button>
+      <button class="chip mini" data-act="FORGET_NO">取消</button>
     </div>
 
     <details class="config" id="configBox">
