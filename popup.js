@@ -26,6 +26,21 @@ function endOf(value) {
   const parsed = Date.parse(`${value}`.includes("T") ? value : `${value}`.replace(" ", "T"));
   return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
 }
+function activeTrip(shot) {
+  const status = shot?.trip?.status;
+  const launch = shot?.trip?.launch;
+  const now = Math.floor(Date.now() / 1000);
+  if (status?.state === "traveling") {
+    return { active: true, backAt: status.backAt || 0, now: status.now || now };
+  }
+  if (launch?.hours > 0 || launch?.launchedAt) {
+    const source = typeof launch.launchedAt === "number" ? launch.launchedAt : shot?.updatedAt;
+    const start = typeof source === "number" ? Math.floor(source / 1000) : 0;
+    const estimated = launch.backAt || (start > 0 && launch.hours > 0 ? start + launch.hours * 3600 : 0);
+    if (estimated > now) return { active: true, backAt: estimated, now };
+  }
+  return { active: false, backAt: 0, now };
+}
 function notice(text) {
   const box = el("flash");
   box.textContent = text;
@@ -133,8 +148,9 @@ function paint() {
   }
   if (state.settings.tripEnabled && shot?.trip?.status) {
     const status = shot.trip.status;
-    if (status.state === "traveling") {
-      const left = Math.max(0, (status.backAt || 0) - (status.now || Math.floor(Date.now() / 1000)));
+    const trip = activeTrip(shot);
+    if (trip.active) {
+      const left = Math.max(0, (trip.backAt || 0) - (trip.now || Math.floor(Date.now() / 1000)));
       const hh = `${Math.floor(left / 3600)}`.padStart(2, "0");
       const mm = `${Math.floor((left % 3600) / 60)}`.padStart(2, "0");
       const ss = `${left % 60}`.padStart(2, "0");
