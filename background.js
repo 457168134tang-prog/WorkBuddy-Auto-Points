@@ -77,8 +77,11 @@ function activeTrip(shot) {
   const status = shot?.trip?.status;
   const launch = shot?.trip?.launch;
   const now = Math.floor(Date.now() / 1000);
-  if (status?.state === "traveling") {
-    return { active: true, backAt: status.backAt || 0, now: status.now || now };
+  if (status && status.state != null) {
+    if (status.state === "traveling") {
+      return { active: true, backAt: status.backAt || 0, now: status.now || now };
+    }
+    return { active: false, backAt: 0, now };
   }
   if (launch?.hours > 0 || launch?.launchedAt) {
     const source = typeof launch.launchedAt === "number" ? launch.launchedAt : shot?.updatedAt;
