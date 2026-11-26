@@ -73,6 +73,34 @@ const expiryTime = (value) => {
 };
 const newAccountId = () => `acct_${(globalThis.crypto?.randomUUID?.() || `${Date.now()}${Math.random()}`).slice(0, 12)}`;
 
+function activeTrip(shot) {
+  const status = shot?.trip?.status;
+  const launch = shot?.trip?.launch;
+  const now = Math.floor(Date.now() / 1000);
+  if (status && status.state != null) {
+    if (status.state === "traveling") {
+      return { active: true, backAt: status.backAt || 0, now: status.now || now };
+    }
+    return { active: false, backAt: 0, now };
+  }
+  if (launch?.hours > 0 || launch?.launchedAt) {
+    const source = typeof launch.launchedAt === "number" ? launch.launchedAt : shot?.updatedAt;
+    const start = typeof source === "number" ? Math.floor(source / 1000) : 0;
+    const estimated = launch.backAt || (start > 0 && launch.hours > 0 ? start + launch.hours * 3600 : 0);
+    if (estimated > now) return { active: true, backAt: estimated, now };
+  }
+  return { active: false, backAt: 0, now };
+}
+
+function tripRemainText(trip) {
+  const left = Math.max(0, (trip.backAt || 0) - (trip.now || Math.floor(Date.now() / 1000)));
+  const hours = Math.floor(left / 3600);
+  const minutes = Math.floor((left % 3600) / 60);
+  const seconds = left % 60;
+  const pad = (value) => `${value}`.padStart(2, "0");
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+}
+
 const ERROR_RULES = [
   [/not arrived|not yet|still traveling|in progress/i, "行程还在进行中，结束后再领取奖励"],
   [/no unclaimed|no travel|nothing to claim/i, "目前没有可领取的行程奖励"],
@@ -104,11 +132,14 @@ const cookies = {
       }));
   },
   scope(item) {
-    return `https://${item.domain}${item.path && item.path.startsWith("/") ? item.path : "/"}`;
+    const host = `${item.domain || ""}`.replace(/^\./, "");
+    const path = item.path && item.path.startsWith("/") ? item.path : "/";
+    return `https://${host}${path}`;
   },
   async wipe() {
     const items = await chrome.cookies.getAll({});
     for (const item of items) {
+      if (!SESSION_FIELDS.has(item.name)) continue;
       if (!HOSTS.some((host) => item.domain === host || item.domain === `.${host}`)) continue;
       await chrome.cookies.remove({ url: cookies.scope(item), name: item.name }).catch(() => {});
     }
@@ -144,12 +175,13 @@ const cookies = {
 const api = {
   async endpoint() {
     const items = await chrome.cookies.getAll({}).catch(() => []);
-    const has = (host) => items.some((item) =>
-      (item.domain === host || item.domain === `.${host}`) &&
-      (item.name === "session" || item.name === "session_2")
-    );
-    if (has("www.codebuddy.cn")) return "https://www.codebuddy.cn";
-    if (has("www.workbuddy.cn")) return "https://www.workbuddy.cn";
+    const has = (host) => items.some((item) => {
+      const domain = `${item.domain || ""}`.replace(/^\./, "");
+      return (domain === host || domain === `www.${host}`) &&
+        (item.name === "session" || item.name === "session_2");
+    });
+    if (has("codebuddy.cn")) return "https://www.codebuddy.cn";
+    if (has("workbuddy.cn")) return "https://www.workbuddy.cn";
     return null;
   },
   async call(route, options = {}) {
@@ -274,12 +306,13 @@ const journey = {
       ? Math.round(((next.backAt - next.leftAt) / 3600) * 10) / 10
       : undefined;
     if (measured > 0) hours = measured;
-    return { hours: hours > 0 ? hours : 0 };
+    return { hours: hours > 0 ? hours : 0, backAt: next?.backAt, now: next?.now };
   },
   async settle(shot, enabled) {
     if (!enabled) return;
     const status = await journey.status();
     if (!status) return;
+    let currentStatus = status;
     const travelling = status.state === "traveling";
     const returned = status.state != null && !travelling;
     const stamp = `${status.leftAt ?? status.backAt ?? status.state ?? ""}`;
@@ -306,20 +339,27 @@ const journey = {
 
     if (returned && !status.capped && shot.tripLaunchDay !== clock.day()) {
       const result = await journey.depart();
+      const after = await journey.status();
       if (result.hours != null) {
-        record.launch = { hours: result.hours };
+        record.launch = {
+          hours: result.hours,
+          launchedAt: Date.now(),
+          backAt: after?.backAt || result.backAt,
+          now: after?.now || result.now
+        };
         record.launched = true;
+        currentStatus = after || status;
       } else if (result.error) {
         record.launch = { error: result.error };
       }
       shot.tripLaunchDay = clock.day();
     }
 
-    shot.wasOnTrip = travelling;
+    shot.wasOnTrip = currentStatus?.state === "traveling";
     if (Object.keys(record).length) {
-      shot.trip = { ...(shot.trip || {}), status, ...record };
+      shot.trip = { ...(shot.trip || {}), status: currentStatus, ...record };
     } else {
-      shot.trip = { ...(shot.trip || {}), status };
+      shot.trip = { ...(shot.trip || {}), status: currentStatus };
     }
     return shot.trip;
   }
@@ -370,7 +410,7 @@ const engine = {
       for (const account of state.accounts) await engine.one(account);
       await store.commit();
       await engine.badge();
-      engine.announce(state);
+      await engine.announce(state);
       chrome.runtime.sendMessage({ kind: "REFRESHED", state }).catch(() => {});
     } finally {
       syncing = false;
@@ -390,9 +430,10 @@ const engine = {
     chrome.action.setBadgeText({ text: text.slice(0, 5) });
     chrome.action.setBadgeBackgroundColor({ color: "#1e415e" });
   },
-  announce(state) {
+  async announce(state) {
     const good = [];
     const bad = [];
+    let dirty = false;
     for (const account of state.accounts) {
       const shot = state.snapshots[account.id];
       if (!shot) continue;
@@ -413,12 +454,26 @@ const engine = {
       } else if (shot.claimError) {
         bad.push(`${account.label}: 行程奖励领取失败：${shot.claimError}`);
       }
-      if (shot.trip?.launched && shot.trip.launch?.hours != null) {
-        good.push(`${account.label}: 行程已出发，预计 ${shot.trip.launch.hours} 小时后返回`);
-      } else if (shot.trip?.launch?.error) {
+
+      const trip = activeTrip(shot);
+      if (trip.active) {
+        if (shot.trip?.launch && !shot.trip.launch.notified) {
+          good.push(`${account.label}: 行程进行中，剩余 ${tripRemainText(trip)}`);
+          shot.trip.launch.notified = true;
+          dirty = true;
+        }
+      } else if (shot.trip?.status?.state != null && shot.trip.status.capped) {
+        if (shot.trip.cappedNoticeDay !== clock.day()) {
+          good.push(`${account.label}: 今日行程已达上限，明天可继续出发`);
+          shot.trip.cappedNoticeDay = clock.day();
+          dirty = true;
+        }
+      }
+      if (!trip.active && shot.trip?.launch?.error) {
         bad.push(`${account.label}: 发起行程失败：${shot.trip.launch.error}`);
       }
     }
+    if (dirty) await store.commit();
     const show = (title, lines) => {
       if (!lines.length) return;
       chrome.notifications.create({
@@ -443,10 +498,12 @@ async function adoptCurrent() {
   try { probe = await balance.read(); }
   catch (error) { return { ok: false, error: `登录信息验证失败：${error.message || error}` }; }
 
-  const token = (items.find((item) => item.name === "session") || {}).value || "";
-  const found = state.accounts.find((account) =>
-    (account.cookies || []).some((item) => item.name === "session" && item.value === token)
-  );
+  const token = (items.find((item) => item.name === "session" || item.name === "session_2") || {}).value || "";
+  const found = token ? state.accounts.find((account) =>
+    (account.cookies || []).some((item) =>
+      (item.name === "session" || item.name === "session_2") && item.value === token
+    )
+  ) : null;
   if (found) {
     state.activeId = found.id;
     await store.commit();
@@ -518,10 +575,21 @@ async function handleActive(mode) {
           text = result.note || "当前无法发起行程，请稍后再试";
         } else {
           text = result.hours > 0 ? `已出发，预计 ${result.hours} 小时后返回` : "已出发，预计返回时间暂未获取";
-          shot.trip = { ...(shot.trip || {}), launch: { hours: result.hours || 0 } };
+          const status = await journey.status();
+          shot.trip = {
+            ...(shot.trip || {}),
+            status: status || shot.trip?.status,
+            launch: {
+              hours: result.hours || 0,
+              launchedAt: Date.now(),
+              backAt: status?.backAt || result.backAt,
+              now: status?.now || result.now
+            }
+          };
+          shot.tripLaunchDay = clock.day();
         }
-        const status = await journey.status();
-        if (status) shot.trip = { ...(shot.trip || {}), status };
+        const current = await journey.status();
+        if (current) shot.trip = { ...(shot.trip || {}), status: current };
       }
     } catch (error) {
       text = error.message === EXPIRED ? "登录已失效，请重新登录并保存当前账号" : explain(error.message || error);
@@ -539,7 +607,7 @@ async function siteBase() {
   return ((await api.endpoint()) || state.settings.apiBase || "https://www.workbuddy.cn").replace(/\/$/, "");
 }
 async function openLogin() {
-  await chrome.tabs.create({ url: `${await siteBase()}/login/` });
+  await chrome.tabs.create({ url: `${await siteBase()}/login/switch-account` });
 }
 async function openPlans() {
   await chrome.tabs.create({ url: `${await siteBase()}/profile/plans-usage` });
@@ -559,7 +627,11 @@ const handlers = {
     await engine.badge();
     return { ok: true, state };
   },
-  ADOPT: async () => adoptCurrent(),
+  ADOPT: async () => {
+    const result = await adoptCurrent();
+    if (result.ok) await engine.all();
+    return result.ok ? { ...result, state: await store.read() } : result;
+  },
   RENAME: async (msg) => {
     const state = await store.read();
     const account = state.accounts.find((item) => item.id === msg.id);
