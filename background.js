@@ -132,11 +132,14 @@ const cookies = {
       }));
   },
   scope(item) {
-    return `https://${item.domain}${item.path && item.path.startsWith("/") ? item.path : "/"}`;
+    const host = `${item.domain || ""}`.replace(/^\./, "");
+    const path = item.path && item.path.startsWith("/") ? item.path : "/";
+    return `https://${host}${path}`;
   },
   async wipe() {
     const items = await chrome.cookies.getAll({});
     for (const item of items) {
+      if (!SESSION_FIELDS.has(item.name)) continue;
       if (!HOSTS.some((host) => item.domain === host || item.domain === `.${host}`)) continue;
       await chrome.cookies.remove({ url: cookies.scope(item), name: item.name }).catch(() => {});
     }
@@ -172,12 +175,13 @@ const cookies = {
 const api = {
   async endpoint() {
     const items = await chrome.cookies.getAll({}).catch(() => []);
-    const has = (host) => items.some((item) =>
-      (item.domain === host || item.domain === `.${host}`) &&
-      (item.name === "session" || item.name === "session_2")
-    );
-    if (has("www.codebuddy.cn")) return "https://www.codebuddy.cn";
-    if (has("www.workbuddy.cn")) return "https://www.workbuddy.cn";
+    const has = (host) => items.some((item) => {
+      const domain = `${item.domain || ""}`.replace(/^\./, "");
+      return (domain === host || domain === `www.${host}`) &&
+        (item.name === "session" || item.name === "session_2");
+    });
+    if (has("codebuddy.cn")) return "https://www.codebuddy.cn";
+    if (has("workbuddy.cn")) return "https://www.workbuddy.cn";
     return null;
   },
   async call(route, options = {}) {
@@ -494,10 +498,12 @@ async function adoptCurrent() {
   try { probe = await balance.read(); }
   catch (error) { return { ok: false, error: `登录信息验证失败：${error.message || error}` }; }
 
-  const token = (items.find((item) => item.name === "session") || {}).value || "";
-  const found = state.accounts.find((account) =>
-    (account.cookies || []).some((item) => item.name === "session" && item.value === token)
-  );
+  const token = (items.find((item) => item.name === "session" || item.name === "session_2") || {}).value || "";
+  const found = token ? state.accounts.find((account) =>
+    (account.cookies || []).some((item) =>
+      (item.name === "session" || item.name === "session_2") && item.value === token
+    )
+  ) : null;
   if (found) {
     state.activeId = found.id;
     await store.commit();
@@ -580,6 +586,7 @@ async function handleActive(mode) {
               now: status?.now || result.now
             }
           };
+          shot.tripLaunchDay = clock.day();
         }
         const current = await journey.status();
         if (current) shot.trip = { ...(shot.trip || {}), status: current };
@@ -620,7 +627,11 @@ const handlers = {
     await engine.badge();
     return { ok: true, state };
   },
-  ADOPT: async () => adoptCurrent(),
+  ADOPT: async () => {
+    const result = await adoptCurrent();
+    if (result.ok) await engine.all();
+    return result.ok ? { ...result, state: await store.read() } : result;
+  },
   RENAME: async (msg) => {
     const state = await store.read();
     const account = state.accounts.find((item) => item.id === msg.id);

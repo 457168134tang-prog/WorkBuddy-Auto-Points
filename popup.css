@@ -8,6 +8,10 @@
   --onbrand: #ffffff;
   --alert: #cf222e;
   --tint: #f6f8fa;
+  --hover: #f7b32b;
+  --hover-ink: #1f2328;
+  --good: #2da44e;
+  --warn: #f7b32b;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -46,15 +50,28 @@ body {
   font-size: 12px;
   padding: 6px 10px;
   white-space: nowrap;
-  transition: background .15s, transform .1s, border-color .15s;
+  transition: background .15s, transform .1s, border-color .15s, color .15s;
 }
 .round { width: 28px; height: 28px; font-size: 16px; line-height: 1; padding: 0; }
-.round:hover:not(:disabled), .chip:hover:not(:disabled) { background: var(--tint); border-color: var(--brand); }
+.round:hover:not(:disabled), .chip:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--hover);
+  color: var(--hover-ink);
+}
 .chip:active:not(:disabled), .round:active:not(:disabled) { transform: translateY(1px); }
 .chip.solid { background: var(--brand); border-color: var(--brand); color: var(--onbrand); }
-.chip.solid:hover:not(:disabled) { filter: brightness(1.08); }
+.chip.solid:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--hover);
+  color: var(--hover-ink);
+  filter: none;
+}
 .chip.danger { color: var(--alert); }
-.chip.danger:hover:not(:disabled) { border-color: var(--alert); }
+.chip.danger:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--hover);
+  color: var(--hover-ink);
+}
 .chip.mini { padding: 4px 8px; font-size: 11px; }
 .chip.wide { width: 100%; margin-top: 8px; }
 .round:disabled, .chip:disabled { opacity: .42; cursor: not-allowed; }
@@ -92,7 +109,7 @@ select { flex: 1; min-width: 0; }
 .figures b { font-size: 21px; color: var(--brand); line-height: 1; }
 .figures em { margin-left: auto; color: var(--soft); font-size: 12px; font-style: normal; }
 .meter { height: 4px; margin-top: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
-.meter i { display: block; height: 100%; width: 0; background: var(--brand); transition: width .25s ease; }
+.meter i { display: block; height: 100%; width: 0; background: var(--brand); transition: width .25s ease, background .25s ease; }
 .blank { text-align: center; padding: 18px 6px; border: 1px dashed var(--line); border-radius: 8px; }
 .blank p { margin: 4px 0; }
 .dim { color: var(--soft); font-size: 11px; }

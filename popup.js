@@ -1,6 +1,7 @@
 const el = (id) => document.getElementById(id);
 let view = null;
 let timer = null;
+let countdownTimer = null;
 let renameTarget = "";
 let forgetTarget = "";
 
@@ -43,6 +44,31 @@ function activeTrip(shot) {
     if (estimated > now) return { active: true, backAt: estimated, now };
   }
   return { active: false, backAt: 0, now };
+}
+function countdownText(trip) {
+  const left = Math.max(0, (trip.backAt || 0) - Math.floor(Date.now() / 1000));
+  const hh = `${Math.floor(left / 3600)}`.padStart(2, "0");
+  const mm = `${Math.floor((left % 3600) / 60)}`.padStart(2, "0");
+  const ss = `${left % 60}`.padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+function syncCountdown() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
+  if (!el("tripCountdown")) return;
+  countdownTimer = setInterval(() => {
+    const active = activeAccount();
+    const trip = activeTrip(active ? view?.snapshots[active.id] : null);
+    const node = el("tripCountdown");
+    if (!trip.active || !node) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+      return;
+    }
+    node.textContent = `✿ 行程进行中，剩余 ${countdownText(trip)}`;
+  }, 1000);
 }
 function notice(text) {
   const box = el("flash");
@@ -119,7 +145,9 @@ function paint() {
     el("allNum").textContent = numeric(result.amount);
     const percent = result.amount > 0 ? (result.remain / result.amount) * 100 : 0;
     el("ratio").textContent = `${percent.toFixed(1)}%`;
-    el("meterFill").style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    const meter = el("meterFill");
+    meter.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    meter.style.background = percent >= 60 ? "var(--good)" : percent >= 20 ? "var(--warn)" : "var(--alert)";
 
     const usable = (result.rows || [])
       .filter((row) => (parseFloat(row.CycleCapacityRemainPrecise ?? row.CapacityRemainPrecise ?? "0") || 0) > 0)
@@ -153,11 +181,7 @@ function paint() {
     const status = shot.trip.status;
     const trip = activeTrip(shot);
     if (trip.active) {
-      const left = Math.max(0, (trip.backAt || 0) - (trip.now || Math.floor(Date.now() / 1000)));
-      const hh = `${Math.floor(left / 3600)}`.padStart(2, "0");
-      const mm = `${Math.floor((left % 3600) / 60)}`.padStart(2, "0");
-      const ss = `${left % 60}`.padStart(2, "0");
-      flags.push(`✿ 行程进行中，剩余 ${hh}:${mm}:${ss}`);
+      flags.push(`✿ 行程进行中，剩余 ${countdownText(trip)}`);
     } else if (status.capped) {
       flags.push("✿ 今日行程已达上限，明天可继续出发");
       el("claimBtn").hidden = false;
@@ -168,6 +192,10 @@ function paint() {
     }
   }
   el("flags").innerHTML += flags.map((text) => `<span>${text}</span>`).join("");
+  const countdownNode = Array.from(el("flags").querySelectorAll("span"))
+    .find((node) => node.textContent.startsWith("✿ 行程进行中，剩余 "));
+  if (countdownNode) countdownNode.id = "tripCountdown";
+  syncCountdown();
   if (shot?.updatedAt) el("lastTime").textContent = `最近同步 ${stamp(shot.updatedAt)}`;
 
   el("apiHost").value = state.settings.apiBase || "";
@@ -274,7 +302,14 @@ async function act(kind) {
         tripEnabled: el("autoTrip").checked
       }
     });
-    if (reply.ok) view = reply.state;
+    if (reply.ok) {
+      view = reply.state;
+      el("apiHost").value = view.settings.apiBase || "";
+      el("minutes").value = view.settings.refreshIntervalMinutes ?? 30;
+      el("autoDaily").checked = !!view.settings.dailyEnabled;
+      el("autoTrip").checked = !!view.settings.tripEnabled;
+      paint();
+    }
     notice(reply.ok ? "选项已保存" : `保存失败：${reply.error || ""}`);
     return;
   }
