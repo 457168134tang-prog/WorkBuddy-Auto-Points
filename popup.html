@@ -18,7 +18,16 @@
     </header>
 
     <div class="picker">
-      <select id="whoPick" aria-label="切换账号"><option>加载中…</option></select>
+      <div class="pickWrap">
+        <button type="button" class="pickValue" id="whoPick" role="combobox" aria-label="切换账号" aria-haspopup="listbox" aria-controls="pickList" aria-expanded="false"><span id="pickLabel">加载中…</span></button>
+        <div class="pickMenu" id="pickMenu" hidden>
+          <div class="pickTools">
+            <input id="pickSearch" type="text" placeholder="搜索账号" aria-label="搜索账号" autocomplete="off" />
+            <button type="button" class="chip" id="sortBtn">积分↓</button>
+          </div>
+          <div class="pickList" id="pickList" role="listbox" aria-label="账号列表"></div>
+        </div>
+      </div>
       <button class="chip" id="renameBtn" data-act="RENAME">改名</button>
     </div>
 

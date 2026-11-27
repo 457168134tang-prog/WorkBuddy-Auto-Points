@@ -4,6 +4,7 @@ let timer = null;
 let countdownTimer = null;
 let renameTarget = "";
 let forgetTarget = "";
+let pickSortDesc = null;
 
 function ask(kind, extra = {}) {
   return new Promise((done) => {
@@ -87,6 +88,76 @@ function activeAccount() {
   return view?.accounts.find((item) => item.id === view.activeId) || null;
 }
 
+function accountPoints(item, state = view) {
+  const result = state?.snapshots?.[item.id]?.result;
+  if (!result || !Number.isFinite(Number(result.remain))) return null;
+  return Number(result.remain);
+}
+
+function pointText(item, state = view) {
+  const points = accountPoints(item, state);
+  return points === null ? "—" : numeric(points);
+}
+
+function closePickMenu() {
+  const menu = el("pickMenu");
+  if (menu) menu.hidden = true;
+  const control = el("whoPick");
+  if (control) control.setAttribute("aria-expanded", "false");
+}
+
+function renderPickRows() {
+  const state = view;
+  if (!state) return;
+  const sortBtn = el("sortBtn");
+  const next = pickSortDesc ? "升序" : "降序";
+  sortBtn.textContent = `积分${pickSortDesc ? "↑" : "↓"}`;
+  sortBtn.title = `按积分${next}排列`;
+  sortBtn.setAttribute("aria-label", `按积分${next}排列`);
+
+  const query = el("pickSearch").value.trim().toLowerCase();
+  let list = [...(state.accounts || [])];
+  if (query) list = list.filter((item) => `${item.label || ""}`.toLowerCase().includes(query));
+  if (pickSortDesc !== null) {
+    list.sort((first, second) => {
+      const a = accountPoints(first, state);
+      const b = accountPoints(second, state);
+      if (a === null && b === null) return 0;
+      if (a === null) return 1;
+      if (b === null) return -1;
+      return pickSortDesc ? b - a : a - b;
+    });
+  }
+
+  const box = el("pickList");
+  box.innerHTML = "";
+  if (!list.length) {
+    box.innerHTML = `<div class="pickEmpty">${state.accounts?.length ? "无匹配账号" : "请先保存账号"}</div>`;
+    return;
+  }
+  for (const item of list) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "pickRow";
+    row.dataset.id = item.id;
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", String(item.id === state.activeId));
+    row.innerHTML = `<span>${safe(item.label || "账号")}</span><span class="point">${safe(pointText(item, state))}</span>`;
+    box.appendChild(row);
+  }
+}
+
+async function chooseAccount(id) {
+  closePickMenu();
+  if (!id || !view || id === view.activeId) return;
+  const reply = await ask("PICK", { id });
+  if (reply.ok) {
+    view = reply.state;
+    paint();
+    notice("已切换账号");
+  }
+}
+
 async function load() {
   const reply = await ask("FETCH_STATE");
   if (reply.ok) {
@@ -100,20 +171,11 @@ function paint() {
   if (!state) return;
   hideInline();
   const list = state.accounts || [];
-  const picker = el("whoPick");
-  picker.innerHTML = "";
-  if (!list.length) {
-    picker.innerHTML = '<option value="">请先保存账号</option>';
-  } else {
-    for (const item of list) {
-      const option = document.createElement("option");
-      option.value = item.id;
-      option.textContent = item.label || "账号";
-      option.selected = item.id === state.activeId;
-      picker.appendChild(option);
-    }
-  }
   const active = activeAccount();
+  const shown = active || list[0];
+  el("pickLabel").textContent = shown ? shown.label || "账号" : "请先保存账号";
+  closePickMenu();
+  renderPickRows();
   const shot = active ? state.snapshots[active.id] : null;
   el("who").textContent = active ? `当前账号：${active.label || "账号"}` : "尚未保存账号";
   el("blank").hidden = !!active;
@@ -328,13 +390,32 @@ document.addEventListener("click", (event) => {
   if (button && !button.disabled) act(button.dataset.act);
 });
 
-el("whoPick").addEventListener("change", async (event) => {
-  const reply = await ask("PICK", { id: event.target.value });
-  if (reply.ok) {
-    view = reply.state;
-    paint();
-    notice("已切换账号");
+el("whoPick").addEventListener("click", () => {
+  if (!view?.accounts?.length) return;
+  const menu = el("pickMenu");
+  const opening = menu.hidden;
+  menu.hidden = !opening;
+  el("whoPick").setAttribute("aria-expanded", String(opening));
+  if (opening) {
+    renderPickRows();
+    el("pickSearch").focus();
   }
+});
+
+el("pickSearch").addEventListener("input", renderPickRows);
+
+el("sortBtn").addEventListener("click", () => {
+  pickSortDesc = !pickSortDesc;
+  renderPickRows();
+});
+
+el("pickList").addEventListener("click", (event) => {
+  const row = event.target.closest(".pickRow");
+  if (row) chooseAccount(row.dataset.id);
+});
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".pickWrap")) closePickMenu();
 });
 
 el("renameInput").addEventListener("keydown", (event) => {
@@ -343,7 +424,10 @@ el("renameInput").addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") hideInline();
+  if (event.key === "Escape") {
+    hideInline();
+    closePickMenu();
+  }
 });
 
 chrome.runtime.onMessage.addListener((message) => {
