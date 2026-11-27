@@ -104,7 +104,7 @@ function tripRemainText(trip) {
 const ERROR_RULES = [
   [/not arrived|not yet|still traveling|in progress/i, "行程还在进行中，结束后再领取奖励"],
   [/no unclaimed|no travel|nothing to claim/i, "目前没有可领取的行程奖励"],
-  [/no active buddy|no buddy/i, "暂时无法发起行程：可能还在途中，或今日已达上限"],
+  [/no active buddy|no buddy/i, "请先在官网完成新手任务领取 Buddy 后再出发"],
   [/daily limit|limit reached|reached.*limit/i, "今日行程已达上限，请明天再试"],
   [/already/i, "已处理过，无需重复操作"],
   [new RegExp(EXPIRED, "i"), "登录已失效，请重新登录并保存当前账号"],
